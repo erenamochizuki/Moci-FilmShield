@@ -1,0 +1,7 @@
+{
+  "skipFighterEffects": true,
+  "enableFighterLimit": false,
+  "fighterLimit": 150,
+  "enableNormalRelief": true,
+  "enableShaders": true
+}

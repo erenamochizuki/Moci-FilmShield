@@ -1,0 +1,9 @@
+{
+  "graphics": {
+    "fx": {
+      "filmshield_surface": "graphics/fx/filmshield_surface.png",
+      "filmshield_fog": "graphics/fx/filmshield_fog.png",
+      "filmshield_hit": "graphics/fx/filmshield_hit.png"
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "id": "moci_filmshield",
+  "name": "Moci的贴膜盾前置",
+  "author": "Moci",
+  "version": "1.0.0",
+  "description": "可复用的舰体贴膜护盾、战斗状态UI、着色器与法线渲染接口。",
+  "gameVersion": "0.98",
+  "dependencies": [
+    {
+      "id": "lw_lazylib",
+      "name": "LazyLib"
+    },
+    {
+      "id": "shaderLib",
+      "name": "GraphicsLib"
+    }
+  ],
+  "jars": [
+    "jars/FilmShield.jar"
+  ],
+  "modPlugin": "org.moci.filmshield.core.FilmShieldModPlugin"
+}

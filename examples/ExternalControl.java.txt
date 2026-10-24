@@ -1,0 +1,22 @@
+// For ships without ShieldAPI: a ship system/AI owns the switch.
+// Create the profile once, then attach in applyEffectsAfterShipCreation.
+ShieldProfile profile=ShieldProfile.builder("your_mod:coating_v1")
+    .control(ShieldProfile.Control.EXTERNAL)
+    .fluxPerDamage(0.8f)
+    .colors(new java.awt.Color(255,65,45),new java.awt.Color(255,200,70))
+    .build();
+FilmShieldController shield=FilmShield.attach(ship,profile);
+shield.setEnabled(true);  // The default is false. Overload, venting, phasing and death still disable protection.
+shield.setEnabled(false);
+FilmShield.detach(ship);  // Restores shield geometry/colors and removes the controller's modifiers.
+
+// Visual-only adapter for an independent shield pool; this installs no damage listener.
+FilmShield.registerVisual(ship,new ShieldVisual() {
+    public boolean isActive() { return yourShieldPoolIsActive(); }
+    public float getLevel(ShipAPI ignored) { return yourShieldStressRatio(); }
+    public java.util.List<? extends ShieldHit> getHits() { return yourHitData(); }
+    public boolean showStatus() { return true; }
+    public String getStatusText() { return isActive()?"COATING: ON":"COATING: OFF"; }
+});
+FilmShield.ensureCombatServices();
+// Unregister with FilmShield.unregisterVisual(ship,theSameAdapterInstance) when your shield is removed.

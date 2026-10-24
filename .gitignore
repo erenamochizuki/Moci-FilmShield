@@ -1,0 +1,24 @@
+# 本机依赖、构建与发布产物
+/lib/
+/target/
+/jars/
+/releases/
+*.class
+*.log
+
+# 初次拆分的本地工作区变更清单
+/CHANGES.md
+
+# 编辑器与系统文件
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 本机配置与凭据
+.env
+.env.*
+*.key
+*.pem

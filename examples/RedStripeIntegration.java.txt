@@ -1,0 +1,25 @@
+package data.hullmods;
+
+import com.fs.starfarer.api.combat.ShipAPI;
+import org.moci.filmshield.api.ShieldProfile;
+import org.moci.filmshield.core.FilmShieldHullmod;
+
+/** Source migration for Red Stripe 2.76 fix9: replace src/data/hullmods/RS_Moci_GNShield.java.
+ * Retains the existing class/hullmod ID and native shield toggle; no Moci dependency.
+ * Update any direct RS_Moci_GNShield_Script/RS renderer callers as described in README.
+ */
+public class RS_Moci_GNShield extends FilmShieldHullmod {
+    private static final ShieldProfile PROFILE=ShieldProfile.builder("red_stripe:gnshield_v1")
+        .control(ShieldProfile.Control.NATIVE_SHIELD)
+        .fluxPerDamage(1f)
+        .fragmentationMultiplier(0.25f) // Preserve the copied Moci balance.
+        .suppressSpecLessModuleProjectiles(true) // Missiles/explosions still generate flux.
+        .modifierId("red_stripe:filmshield_absorb")
+        .followParent(true)
+        .labels("GN护盾","激活","关闭","力场：开启","力场：关闭")
+        .build();
+    @Override protected ShieldProfile getProfile(ShipAPI ship) { return PROFILE; }
+    @Override public boolean isApplicableToShip(ShipAPI ship) {
+        return ship!=null && ship.getShield()!=null && ship.getHullSpec().hasTag("moci_ms");
+    }
+}

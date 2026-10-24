@@ -1,0 +1,2 @@
+name,id,tier,rarity,tech/manufacturer,tags,uiTags,base value,unlocked,hidden,hiddenEverywhere,cost_frigate,cost_dest,cost_cruiser,cost_capital,script,desc,short,sModDesc,sprite
+贴膜盾,filmshield_surface,0,0,,,,0,false,true,false,0,0,0,0,org.moci.filmshield.core.FilmShieldHullmod,将原版护盾改为贴附舰体的防护膜。开关与幅能效率继承原版护盾。,舰体贴膜护盾。,,graphics/hullmods/filmshield.png
