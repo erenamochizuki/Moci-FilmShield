@@ -21,6 +21,7 @@ public class FilmShieldController implements DamageTakenModifier, AdvanceableLis
     public enum ParamType { ARC, SHIP, PROJ, BEAM }
     protected final ShipAPI ship;
     protected final ShieldProfile profile;
+    private final String hullmodId;
     private final List<Hit> hits=new ArrayList<Hit>();
     private final Set<DamageAPI> modifiedDamage=Collections.newSetFromMap(new IdentityHashMap<DamageAPI,Boolean>());
     private final ShieldAPI originalShield;
@@ -30,17 +31,22 @@ public class FilmShieldController implements DamageTakenModifier, AdvanceableLis
     private boolean enabled,disposed,pendingArmorRestore,servicesStarted;
     private float[][] armorGridCopy;
     public FilmShieldController(ShipAPI ship,ShieldProfile profile) {
+        this(ship,profile,profile==null?null:profile.hullmodId);
+    }
+    public FilmShieldController(ShipAPI ship,ShieldProfile profile,String hullmodId) {
         if(ship==null||profile==null) throw new IllegalArgumentException("Ship and profile are required");
-        if(profile.control==ShieldProfile.Control.NATIVE_SHIELD && ship.getShield()==null
-                && !(profile.followParent&&ship.isStationModule()&&ship.getParentStation()!=null))
-            throw new IllegalArgumentException("Native control requires a shield; use EXTERNAL for shieldless ships");
-        this.ship=ship; this.profile=profile;
+        this.ship=ship; this.profile=profile; this.hullmodId=hullmodId;
         originalShield=ship.getShield();
         originalArc=originalShield==null?0:originalShield.getArc();
         originalRadius=originalShield==null?0:originalShield.getRadius();
         originalInner=originalShield==null?null:originalShield.getInnerColor();
         originalRing=originalShield==null?null:originalShield.getRingColor();
         originalSkip=originalShield!=null&&originalShield.isSkipRendering();
+        // Compatibility constructors may be called directly. A loser must never alter the native shield.
+        if(hullmodId!=null&&!FilmShield.isSelected(ship,hullmodId)) { disposed=true; return; }
+        if(profile.control==ShieldProfile.Control.NATIVE_SHIELD && originalShield==null
+                && !(profile.followParent&&ship.isStationModule()&&ship.getParentStation()!=null))
+            throw new IllegalArgumentException("Native control requires a shield; use EXTERNAL for shieldless ships");
         FilmShield.claim(this);
         init(ship);
     }
@@ -55,11 +61,16 @@ public class FilmShieldController implements DamageTakenModifier, AdvanceableLis
     }
     public ShipAPI getShip() { return ship; }
     public ShieldProfile getProfile() { return profile; }
+    public String getHullmodId() { return hullmodId; }
     /** External mode starts disabled. Ship systems/AI decide when it is enabled. */
     public void setEnabled(boolean value) { enabled=value; }
     public boolean isEnabled() { return enabled; }
     private ShipAPI fluxOwner() {
-        if(profile.followParent&&ship.isStationModule()&&ship.getParentStation()!=null) return ship.getParentStation();
+        if(profile.followParent&&ship.isStationModule()&&ship.getParentStation()!=null) {
+            FilmShieldController parent=FilmShield.find(ship.getParentStation());
+            if(parent!=null&&parent.profile.id.equals(profile.id)&&Objects.equals(parent.hullmodId,hullmodId))
+                return ship.getParentStation();
+        }
         return ship;
     }
     @Override public boolean isActive() {
@@ -90,6 +101,7 @@ public class FilmShieldController implements DamageTakenModifier, AdvanceableLis
         return ParamType.SHIP;
     }
     @Override public String modifyDamageTaken(Object param,CombatEntityAPI target,DamageAPI damage,Vector2f point,boolean shieldHit) {
+        if(disposed) return null;
         damage.getModifier().unmodify(profile.modifierId);
         // Finish the preceding absorbed hit before any following bypass hit can alter armor.
         finishArmorRestore();
@@ -160,7 +172,8 @@ public class FilmShieldController implements DamageTakenModifier, AdvanceableLis
         }
         if(profile.followParent&&ship.isShipWithModules()) for(ShipAPI module:ship.getChildModulesCopy()) {
             FilmShieldController child=FilmShield.find(module);
-            if(child!=null&&child!=this&&child.profile.followParent&&child.profile.id.equals(profile.id)) child.dispose();
+            if(child!=null&&child!=this&&child.profile.followParent&&child.profile.id.equals(profile.id)
+                    &&Objects.equals(child.hullmodId,hullmodId)) child.dispose();
         }
         FilmShield.release(this);
         ship.removeListener(this);

@@ -2,6 +2,7 @@ import java.awt.Color;
 import java.lang.reflect.*;
 import java.util.*;
 import com.fs.starfarer.api.Global;
+import com.fs.starfarer.api.SettingsAPI;
 import com.fs.starfarer.api.combat.*;
 import com.fs.starfarer.api.loading.*;
 import org.lwjgl.util.vector.Vector2f;
@@ -35,6 +36,13 @@ public final class FilmShieldContractTest {
         final Map<String,MutableStat> stats=new HashMap<>();
         final List<Object> listeners=new ArrayList<>();
         final List<ShipAPI> modules=new ArrayList<>();
+        final List<String> hullmods=new ArrayList<>();
+        final Set<String> suppressed=new HashSet<>();
+        final ShipVariantAPI variant=proxy(ShipVariantAPI.class,(m,a)->{
+            if(m.getName().equals("getHullMods")) return hullmods;
+            if(m.getName().equals("getSuppressedMods")) return suppressed;
+            return zero(m.getReturnType());
+        });
         ShipAPI parent;
         final Vector2f location=new Vector2f();
         final FluxTrackerAPI fluxTracker=proxy(FluxTrackerAPI.class,(m,a)->{
@@ -74,6 +82,7 @@ public final class FilmShieldContractTest {
                 switch(m.getName()) {
                     case "getShield":return nativeShield?shield:null;
                     case "getHullSpec":return hullSpec;
+                    case "getVariant":return variant;
                     case "getCustomData":return custom;
                     case "setCustomData":custom.put((String)a[0],a[1]);return null;
                     case "removeCustomData":custom.remove(a[0]);return null;
@@ -110,6 +119,73 @@ public final class FilmShieldContractTest {
     }
     static ShieldProfile external(String id) { return ShieldProfile.builder(id).control(ShieldProfile.Control.EXTERNAL).build(); }
     static void reject(Runnable action,String label) { boolean failed=false;try{action.run();}catch(IllegalArgumentException|IllegalStateException e){failed=true;}check(failed,label); }
+    static void priorityTests() {
+        Map<String,HullModEffect> effects=new HashMap<>();
+        for(String id:Arrays.asList("moci","vector","red")) effects.put(id,new FilmShieldHullmod());
+        effects.put("ordinary",new BaseHullMod());
+        Global.setSettings(proxy(SettingsAPI.class,(m,a)->{
+            if(m.getName().equals("getHullModSpec")) return proxy(HullModSpecAPI.class,(sm,sa)->
+                    sm.getName().equals("getEffect")?effects.get((String)a[0]):zero(sm.getReturnType()));
+            return zero(m.getReturnType());
+        }));
+        String[][] orders={{"moci","vector","red"},{"moci","red","vector"},{"vector","moci","red"},
+                {"vector","red","moci"},{"red","moci","vector"},{"red","vector","moci"}};
+        for(String[] order:orders) {
+            Hull h=new Hull(true); h.hullmods.add("ordinary"); h.hullmods.addAll(Arrays.asList(order));
+            // Call in reverse order: priority is independent of callback order and mod load order.
+            for(int i=order.length-1;i>=0;i--) {
+                ShieldProfile p=ShieldProfile.builder(order[i]).fluxPerDamage(i+1).build();
+                FilmShieldController c=FilmShield.attach(h.ship,p,order[i]);
+                check((c!=null)==(i==0),"only list-first provider attaches: "+Arrays.toString(order));
+            }
+            FilmShieldController winner=FilmShield.find(h.ship);
+            check(winner.getHullmodId().equals(order[0])&&h.listeners.size()==1,"one damage listener for three mods");
+            check(FilmShield.visual(h.ship)==winner,"one visual owner");
+            winner.modifyDamageTaken(null,h.ship,new Hit().api,null,false);
+            near(80,h.flux,"only winner's efficiency applies");
+            h.shieldOn=false;check(!winner.isActive(),"inactive winner never enables a runner-up");
+            FilmShield.detach(h.ship);near(120,h.arc,"selection preserves native shield restoration");
+        }
+        Hull callbacks=new Hull(true);callbacks.hullmods.addAll(Arrays.asList("vector","red","moci"));
+        effects.get("moci").applyEffectsAfterShipCreation(callbacks.ship,"moci");
+        effects.get("red").applyEffectsAfterShipCreation(callbacks.ship,"red");
+        check(callbacks.listeners.isEmpty()&&!callbacks.skip,"losing hullmod callbacks leave shield untouched");
+        effects.get("vector").applyEffectsAfterShipCreation(callbacks.ship,"vector");
+        effects.get("vector").applyEffectsAfterShipCreation(callbacks.ship,"vector");
+        check(callbacks.listeners.size()==1&&"vector".equals(FilmShield.find(callbacks.ship).getHullmodId()),"standard hullmod callbacks arbitrate and remain idempotent");
+        FilmShield.detach(callbacks.ship);
+        Hull h=new Hull(true);h.hullmods.addAll(Arrays.asList("red","vector","moci"));h.suppressed.add("red");
+        check("vector".equals(FilmShield.getSelectedHullmodId(h.ship)),"suppressed provider skipped");
+        check(FilmShield.attach(h.ship,external("red"),"red")==null&&h.listeners.isEmpty(),"suppressed loser has no side effects");
+        ShieldProfile bound=ShieldProfile.builder("moci").hullmodId("moci").build();
+        check(FilmShield.attach(h.ship,bound)==null,"legacy attach honors profile binding");
+        FilmShieldController inactive=new FilmShieldController(h.ship,bound);
+        check(!inactive.isActive()&&FilmShield.visual(h.ship)==null,"direct losing constructor does not claim");
+        near(120,h.arc,"direct losing constructor does not hide native shield");
+        Hit shared=new Hit();shared.modifier.modifyMult(bound.modifierId,.5f);
+        check(inactive.modifyDamageTaken(null,h.ship,shared.api,null,false)==null,"direct losing listener stays inactive");
+        near(.5f,shared.modifier.getModifiedValue(),"losing compatibility listener cannot erase winner's damage modifier");
+        check(!FilmShield.registerVisual(h.ship,()->true,"moci"),"visual-only loser rejected before registration");
+        ShieldVisual visual=()->true;
+        check(FilmShield.registerVisual(h.ship,visual,"vector"),"visual-only winner can register");
+        check(FilmShield.attach(h.ship,bound)==null&&FilmShield.visual(h.ship)==visual,"losing damage provider cannot replace visual winner");
+        Hull unknown=new Hull(true);unknown.hullmods.add("ordinary");
+        check(FilmShield.attach(unknown.ship,bound)==null,"absent hullmod cannot claim ownership");
+        Hull parent=new Hull(false),child=new Hull(false);parent.hullmods.add("moci");child.parent=parent.ship;parent.modules.add(child.ship);
+        ShieldProfile pp=ShieldProfile.builder("parent").hullmodId("moci").control(ShieldProfile.Control.EXTERNAL).build();
+        FilmShieldController pc=FilmShield.attach(parent.ship,pp);pc.setEnabled(true);
+        FilmShield.attachModules(parent.ship,pp);
+        check(FilmShield.find(child.ship)!=null&&FilmShield.find(child.ship).isActive(),"unconfigured module inherits selected parent");
+        FilmShield.detach(parent.ship);
+        Hull local=new Hull(false);local.parent=parent.ship;local.hullmods.add("red");parent.modules.clear();parent.modules.add(local.ship);
+        pc=FilmShield.attach(parent.ship,pp);pc.setEnabled(true);FilmShield.attachModules(parent.ship,pp);
+        check(FilmShield.find(local.ship)==null,"parent cannot preempt a module's own pending hullmod callback");
+        FilmShieldController own=FilmShield.attach(local.ship,external("local"),"red");own.setEnabled(true);
+        own.modifyDamageTaken(null,local.ship,new Hit().api,null,false);
+        near(100,local.flux,"independent module charges own flux");near(0,parent.flux,"independent module does not charge another mod's parent shield");
+        FilmShield.detach(parent.ship);check(FilmShield.find(local.ship)==own,"parent cleanup preserves module's independent provider");
+        Global.setSettings(null);
+    }
     public static void main(String[] args) {
         Global.setCombatEngine(null);
         reject(()->ShieldProfile.builder("bad").fluxPerDamage(Float.NaN).build(),"reject NaN");
@@ -159,6 +235,7 @@ public final class FilmShieldContractTest {
         Hit fragHit=new Hit();fragHit.type=DamageType.FRAGMENTATION;fragShield.modifyDamageTaken(null,frag.ship,fragHit.api,null,false);near(25,frag.flux,"generic fragmentation uses type multiplier once");
         Hull legacyFrag=new Hull(false);FilmShieldController legacyShield=FilmShield.attach(legacyFrag.ship,ShieldProfile.builder("legacy").control(ShieldProfile.Control.EXTERNAL).fragmentationMultiplier(.25f).build());legacyShield.setEnabled(true);
         legacyShield.modifyDamageTaken(null,legacyFrag.ship,fragHit.api,null,false);near(6.25f,legacyFrag.flux,"Moci extra fragmentation multiplier retained");
+        priorityTests();
         Map<String,Object> combatData=new HashMap<>();boolean[] paused={true};
         Global.setCombatEngine(proxy(CombatEngineAPI.class,(m,a)->{
             if(m.getName().equals("isPaused")) return paused[0];

@@ -2,7 +2,7 @@
   "id": "moci_filmshield",
   "name": "Moci的贴膜盾前置",
   "author": "Moci",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "可复用的舰体贴膜护盾、战斗状态UI、着色器与法线渲染接口。",
   "gameVersion": "0.98",
   "dependencies": [

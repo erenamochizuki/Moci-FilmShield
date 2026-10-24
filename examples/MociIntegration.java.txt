@@ -1,5 +1,6 @@
 // Moci uses the same stable API while keeping its hullmod ID, eligibility, numbers and LunaLib options local.
 private static final ShieldProfile PROFILE=ShieldProfile.builder("moci_gnshield_v1")
+  .hullmodId("Moci_GNShield") // The owning hullmod implements FilmShieldProvider.
   .fluxPerDamage(1f).fragmentationMultiplier(0.25f).followParent(true).showStatus(true)
   .labels("GN护盾","激活","关闭","力场：开启","力场：关闭").build();
 

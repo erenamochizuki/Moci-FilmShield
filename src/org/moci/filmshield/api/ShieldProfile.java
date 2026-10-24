@@ -3,7 +3,7 @@ import java.awt.Color;
 /** Immutable per-owner configuration. Reuse a profile; do not create one each frame. */
 public final class ShieldProfile {
     public enum Control { NATIVE_SHIELD, EXTERNAL }
-    public final String id, title, activeText, inactiveText, hudActiveText, hudInactiveText, modifierId;
+    public final String id, title, activeText, inactiveText, hudActiveText, hudInactiveText, modifierId, hullmodId;
     public final Control control;
     public final float fluxPerDamage, fragmentationMultiplier;
     public final boolean followParent, showStatus, suppressSpecLessModuleProjectiles;
@@ -13,7 +13,7 @@ public final class ShieldProfile {
         if (b.id == null || b.id.trim().isEmpty()) throw new IllegalArgumentException("Profile id is required");
         if (b.control == null || b.low == null || b.high == null || b.hooks == null) throw new IllegalArgumentException("Null profile option");
         if (!Float.isFinite(b.flux) || b.flux < 0 || !Float.isFinite(b.frag) || b.frag < 0) throw new IllegalArgumentException("Flux and fragmentation multipliers must be finite and nonnegative");
-        id=b.id; control=b.control; title=b.title; activeText=b.on; inactiveText=b.off;
+        id=b.id; hullmodId=b.hullmodId; control=b.control; title=b.title; activeText=b.on; inactiveText=b.off;
         hudActiveText=b.hudOn; hudInactiveText=b.hudOff; modifierId=b.modifierId;
         fluxPerDamage=b.flux; fragmentationMultiplier=b.frag; followParent=b.parent;
         showStatus=b.status; suppressSpecLessModuleProjectiles=b.suppress;
@@ -22,6 +22,7 @@ public final class ShieldProfile {
     public static Builder builder(String id) { return new Builder(id); }
     public static final class Builder {
         private final String id;
+        private String hullmodId;
         private Control control=Control.NATIVE_SHIELD;
         private float flux=1f, frag=1f;
         private boolean parent=true, status=true, suppress=false;
@@ -29,6 +30,11 @@ public final class ShieldProfile {
         private Color low=new Color(55,145,255), high=new Color(255,20,45);
         private ShieldHooks hooks=ShieldHooks.NONE;
         private Builder(String id) { this.id=id; }
+        /** Bind legacy attach/constructor callers to an installed FilmShieldProvider hullmod. */
+        public Builder hullmodId(String value) {
+            if(value==null||value.trim().isEmpty()) throw new IllegalArgumentException("Empty hullmod id");
+            hullmodId=value; return this;
+        }
         public Builder control(Control v) { control=v; return this; }
         /** Native mode uses the hull's shield efficiency, scaled by this value. External mode uses it directly. */
         public Builder fluxPerDamage(float v) { flux=v; return this; }

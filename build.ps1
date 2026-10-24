@@ -17,5 +17,6 @@ if(-not $SkipContractTests) {
 }
 $jarDir=Join-Path $PSScriptRoot 'jars'
 New-Item -ItemType Directory -Force -Path $jarDir | Out-Null
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'target/moci-filmshield-1.0.0.jar') -Destination (Join-Path $jarDir 'FilmShield.jar') -Force
+$modInfo=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'mod_info.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot ('target/moci-filmshield-'+$modInfo.version+'.jar')) -Destination (Join-Path $jarDir 'FilmShield.jar') -Force
 Write-Output 'Independent FilmShield.jar updated in the workspace; no game files were changed.'

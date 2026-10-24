@@ -2,7 +2,9 @@
 
 源码仓库：[erenamochizuki/Moci-FilmShield](https://github.com/erenamochizuki/Moci-FilmShield)。
 
-独立 mod ID：`moci_filmshield`；版本：1.0.0；API 主版本：1。目标环境为 **Starsector 0.98 / Java 17**。
+独立 mod ID：`moci_filmshield`；版本：1.1.0；API 主版本：1。目标环境为 **Starsector 0.98 / Java 17**。
+
+玩家与接入者请先阅读本目录的 [接入与兼容说明.md](接入与兼容说明.md)，该文件也随游戏用发布包提供，包含多个贴膜盾同时安装时的优先规则。
 
 这是从 Moci GN 护盾提取的公共运行库，包含伤害结算、模块跟随、状态 HUD、命中特效、GLSL 着色器、法线合成与降级渲染。只依赖游戏、LazyLib 和 GraphicsLib；不需要安装 Moci、BoxUtil、MagicLib 或 LunaLib。
 
@@ -22,25 +24,26 @@
 
 修改公共源码后，先构建本前置，再构建 Moci。主工程为接口编译加入公共源码路径，但明确从 MociShipPack.jar 排除 `org/moci/filmshield/**`；实际运行始终使用独立前置 JAR，不能把公共类再打进其他 mod。主工程编译通过不代表已更新前置 JAR。
 
-发布所需内容：mod_info.json、jars、data、graphics。src、examples、tests 和本文档用于开发，可随源码包提供。
+运行 `./package.ps1` 构建并生成 `releases/Moci的贴膜盾前置-1.1.0.zip`；已完成构建时可加 `-SkipBuild`。游戏用发布包包含 mod_info.json、jars、data、graphics，以及 README、接入与兼容说明、验证记录和接入示例。src、tests 随源码仓库提供。
 
 ## 接入方式
 
 依赖声明：
 
 ```json
-{"id":"moci_filmshield","name":"Moci的贴膜盾前置","version":"1.0.0"}
+{"id":"moci_filmshield","name":"Moci的贴膜盾前置","version":"1.1.0"}
 ```
 
 1. **只写舰船数据**：将 `filmshield_surface` 加入 builtInMods。该通用船插隐藏于普通安装列表，不自动加入任何商店或船只；跟随原版护盾开关，要求有原版护盾。
-2. **完整伤害机制**：`FilmShield.attach(ship, profile)`。原版模式跟随原版护盾；`EXTERNAL` 模式适合没有原版护盾的船，由系统或 AI 调用 `setEnabled`，默认关闭。两种模式都在过载、排幅、相位和死亡时停用。
-3. **只复用视觉**：实现 `ShieldVisual` 并注册，继续使用自己的独立护盾池/结算，不安装公共伤害监听器。按需提供命中列表、颜色、压力比例、半径、中心和 HUD 文本，并调用 `ensureCombatServices`。
+2. **完整伤害机制**：继承 `FilmShieldHullmod`，或让自己的船插实现 `FilmShieldProvider` 并调用 `FilmShield.attach(ship, profile, hullmodId)`。也可用 `profile.hullmodId(...)` 绑定旧 attach 入口。未选中的船插返回 null，调用方必须判断；不要对它启动额外监听器或 UI。原版模式跟随原版护盾；`EXTERNAL` 模式适合没有原版护盾的船，由系统或 AI 调用 `setEnabled`，默认关闭。两种模式都在过载、排幅、相位和死亡时停用。
+3. **只复用视觉**：船插实现 `FilmShieldProvider`，先用 `isSelected` 判断，再创建自己的独立护盾池/结算，并用 `registerVisual(ship, visual, hullmodId)` 注册 `ShieldVisual`；不安装公共伤害监听器。按需提供命中列表、颜色、压力比例、半径、中心和 HUD 文本，并调用 `ensureCombatServices`。
 
-配置应只创建一次；profile.id、modifierId 使用自己 mod 的前缀。重复 attach 相同 id 会返回现有控制器，不替换旧配置；不同 id 或另一个视觉所有者会明确报冲突。一艘船只允许一个视觉所有者，不能同时叠加两种贴膜盾船插。ShipAPI 引用仅保存在舰船/战斗生命周期内。
+配置应只创建一次；profile.id、modifierId 使用自己 mod 的前缀。同一艘船按 `ShipVariantAPI.getHullMods()` 的顺序，选第一个未被 suppressed 且实现 `FilmShieldProvider` 的船插。它的开关关闭或过载时，不会改用后面的贴膜盾。无本地参与者的模块可继承母舰选择；模块自己的参与者优先于继承。重复调用选中配置复用控制器；未选中者安静跳过。没有绑定船插 ID 的旧式直接 attach/registerVisual 无法推断调用方，仍采用严格的单一所有者检查，冲突会报错；接入船插应迁移至以上带 ID 的入口。ShipAPI 引用仅保存在舰船/战斗生命周期内。
 
 ## 可扩展点与约束
 
 - `ShieldProfile`：控制模式、幅能系数、旧版额外破片系数、模块跟随、状态文案、低/高压力颜色、伤害 modifier ID。
+- `FilmShieldProvider` / `FilmShield.getSelectedHullmodId` / `FilmShield.isSelected`：识别参与船插并检查优先级；自有伤害/池/UI 必须先检查再创建。选择与装配列表一起在舰船创建时确定；战斗中动态修改列表应重建舰船，不支持无缝热切换已有监听器。
 - `ShieldHooks`：命中是否接管、最终幅能调整、吸收后的通知；允许其他 mod 接入过滤和附加效果。回调在战斗线程执行，不得抛异常、操作 GL 或递归触发 attach。
 - `ShieldVisual` / `ShieldHit`：独立于伤害实现的展示协议。以后增加默认方法保持源码接入兼容；不能重解释现有方法语义，破坏性变更提升 API 主版本。
 - `FilmShield.registerNormalTextureDataCSV(path)`：按 GraphicsLib texture CSV 格式注册法线备用表，仅取 map=normal；素材 ID 和路径由内容 mod 自己命名。
@@ -52,6 +55,8 @@
 ## Moci 迁移边界
 
 Moci 保留船插 ID `Moci_GNShield`、原有 moci_ms 安装限制、专属文本/数值和旧 Java 入口。GN 护盾脚本、HUD、渲染器成为兼容入口；GN 力场防御的独立护盾池/专属 UI 仍在 Moci，通过 ShieldVisual 共用前置渲染器。旧的近战瞬时伤害、硬幅能修复保留在新核心。
+
+本家的 GN 护盾与 GN 力场都参与列表优先选择。维克多重工当前沿用本家的 `Moci_GNShield`，不是第二套护盾；其插件已直接调用前置注册自己的法线表，并显式声明前置依赖。如果以后独立出维克多船插，按上述接口接入即可参与同一选择。
 
 Moci 的 0.25 额外破片系数和旧 modifier ID 由本体 profile 指定；公共默认不重复附加破片折减。Moci LunaLib 性能开关继续控制 Moci 的视觉；其他接入方默认读取 data/config/filmshield.json。所有性能开关只控制渲染，不能关闭伤害防御。
 

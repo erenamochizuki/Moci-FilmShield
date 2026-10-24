@@ -1,22 +1,28 @@
 // For ships without ShieldAPI: a ship system/AI owns the switch.
-// Create the profile once, then attach in applyEffectsAfterShipCreation.
+// The owning hullmod implements FilmShieldProvider. Create this profile once.
 ShieldProfile profile=ShieldProfile.builder("your_mod:coating_v1")
+    .hullmodId("your_mod_coating")
     .control(ShieldProfile.Control.EXTERNAL)
     .fluxPerDamage(0.8f)
     .colors(new java.awt.Color(255,65,45),new java.awt.Color(255,200,70))
     .build();
 FilmShieldController shield=FilmShield.attach(ship,profile);
-shield.setEnabled(true);  // The default is false. Overload, venting, phasing and death still disable protection.
-shield.setEnabled(false);
-FilmShield.detach(ship);  // Restores shield geometry/colors and removes the controller's modifiers.
+if(shield!=null) { // null means another hullmod is earlier in the ship's list.
+    shield.setEnabled(true); // Starts disabled; overload/venting/phasing/death still disable protection.
+    shield.setEnabled(false);
+    if(FilmShield.find(ship)==shield) FilmShield.detach(ship); // Only remove your own controller.
+}
 
-// Visual-only adapter for an independent shield pool; this installs no damage listener.
-FilmShield.registerVisual(ship,new ShieldVisual() {
+// Alternative integration: visual-only adapter for an independent shield pool.
+// Check this BEFORE constructing your pool, damage listener, stats modifiers or UI.
+if(!FilmShield.isSelected(ship,"your_mod_coating")) return;
+ShieldVisual adapter=new ShieldVisual() {
     public boolean isActive() { return yourShieldPoolIsActive(); }
     public float getLevel(ShipAPI ignored) { return yourShieldStressRatio(); }
     public java.util.List<? extends ShieldHit> getHits() { return yourHitData(); }
     public boolean showStatus() { return true; }
     public String getStatusText() { return isActive()?"COATING: ON":"COATING: OFF"; }
-});
+};
+FilmShield.registerVisual(ship,adapter,"your_mod_coating");
 FilmShield.ensureCombatServices();
 // Unregister with FilmShield.unregisterVisual(ship,theSameAdapterInstance) when your shield is removed.
