@@ -10,7 +10,8 @@ import org.moci.filmshield.ui.FilmShieldUI;
 public final class FilmShield {
     public static final int API_VERSION=1;
     public static final String MOD_ID="moci_filmshield";
-    /** Since 1.3.0. A ship carrying this hullmod skips every film shield participant; on a station it covers its modules. */
+    /** Since 1.3.0. A ship carrying this hullmod skips every film shield participant; on a station it covers its modules.
+     * The hullmod is hidden everywhere; other mods add it through builtInMods, a variant or addPermaMod. */
     public static final String DISABLE_HULLMOD_ID="filmshield_disable";
     private static final int MAX_PARENT_DEPTH=16;
     private static final String CONTROLLER_KEY="moci_filmshield.controller.v1";

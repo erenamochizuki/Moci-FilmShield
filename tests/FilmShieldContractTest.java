@@ -347,13 +347,11 @@ public final class FilmShieldContractTest {
         check(!FilmShield.isDisabled(suppressedSwitch.ship)&&"moci".equals(FilmShield.getSelectedHullmodId(suppressedSwitch.ship)),"suppressed switch is inactive");
         Hull plain=new Hull(true);plain.hullmods.add("ordinary");
         Hull provider=new Hull(true);provider.hullmods.add("moci");
-        Hull providerModule=new Hull(false);providerModule.parent=provider.ship;
         check(toggle.isApplicableToShip(plain.ship)&&toggle.isApplicableToShip(null),"switch never blocks a built-in");
-        check(!toggle.showInRefitScreenModPickerFor(plain.ship)&&!toggle.showInRefitScreenModPickerFor(null),"switch hidden without film shield");
-        check(toggle.showInRefitScreenModPickerFor(provider.ship)&&toggle.showInRefitScreenModPickerFor(d.ship),"switch offered on film shield ships");
-        check(toggle.showInRefitScreenModPickerFor(providerModule.ship),"switch offered on modules of film shield stations");
+        check(!toggle.showInRefitScreenModPickerFor(plain.ship)&&!toggle.showInRefitScreenModPickerFor(provider.ship)
+                &&!toggle.showInRefitScreenModPickerFor(d.ship)&&!toggle.showInRefitScreenModPickerFor(null),"switch is never offered to players");
         Hull loop=new Hull(false);loop.parent=loop.ship;
-        check(!FilmShield.isDisabled(loop.ship)&&FilmShield.getSelectedHullmodId(loop.ship)==null&&!toggle.showInRefitScreenModPickerFor(loop.ship),"self-parent terminates");
+        check(!FilmShield.isDisabled(loop.ship)&&FilmShield.getSelectedHullmodId(loop.ship)==null,"self-parent terminates");
         Global.setSettings(null);
         Hull noSettings=new Hull(true);noSettings.hullmods.add(FilmShield.DISABLE_HULLMOD_ID);
         FilmShieldController noSettingsController=FilmShield.attach(noSettings.ship,ShieldProfile.builder("no_settings").build());
@@ -388,7 +386,8 @@ public final class FilmShieldContractTest {
         }
         List<String> toggle=rows.get(FilmShield.DISABLE_HULLMOD_ID);
         check(FilmShieldDisableHullmod.class.getName().equals(toggle.get(header.indexOf("script"))),"disable row uses the switch class");
-        check("false".equalsIgnoreCase(toggle.get(header.indexOf("hidden")))&&"true".equalsIgnoreCase(toggle.get(header.indexOf("unlocked"))),"disable switch is unlocked and visible");
+        check("true".equalsIgnoreCase(toggle.get(header.indexOf("hidden")))&&"true".equalsIgnoreCase(toggle.get(header.indexOf("hiddenEverywhere")))
+                &&"false".equalsIgnoreCase(toggle.get(header.indexOf("unlocked"))),"disable switch is hidden everywhere and locked");
         check(toggle.get(header.indexOf("tags")).contains("no_build_in"),"disable switch cannot be built in as an s-mod");
     }
     public static void main(String[] args) throws Exception {
