@@ -19,6 +19,16 @@ public class FilmShieldShaderManager {
     private Map<String, Integer> shaders = new HashMap<>();
     private boolean openGL20Supported = false;
     private static final Logger LOG = Global.getLogger(FilmShieldShaderManager.class);
+    private static FilmShieldShaderManager shared;
+
+    /**
+     * 进程内共享实例（与抽离前 Moci 的单例一致）。只在渲染线程调用。
+     * 战斗结束时引擎不会调用图层插件的 cleanup，共享后着色器程序只编译一次，不会每场泄漏。
+     */
+    public static FilmShieldShaderManager getShared() {
+        if (shared == null) shared = new FilmShieldShaderManager();
+        return shared;
+    }
     
     public FilmShieldShaderManager() {
         checkOpenGLSupport();
@@ -48,7 +58,11 @@ public class FilmShieldShaderManager {
         }
         
         if (shaders.containsKey(shaderKey)) {
-            return shaders.get(shaderKey);
+            if (isShaderValid(shaderKey)) {
+                return shaders.get(shaderKey);
+            }
+            // 缓存的程序句柄已失效时丢弃并重新编译，避免共享缓存把渲染器永久锁在降级模式
+            shaders.remove(shaderKey);
         }
         
         try {

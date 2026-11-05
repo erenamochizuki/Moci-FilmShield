@@ -18,6 +18,7 @@ public class FilmShieldController implements DamageTakenModifier, AdvanceableLis
     public static final Color TEXT_COLOR=new Color(255,155,255,255);
     public static final Color JITTER_COLOR=new Color(155,155,255,75);
     public static final Color JITTER_UNDER_COLOR=new Color(155,155,255,155);
+    private static final org.apache.log4j.Logger LOG=Global.getLogger(FilmShieldController.class);
     public enum ParamType { ARC, SHIP, PROJ, BEAM }
     protected final ShipAPI ship;
     protected final ShieldProfile profile;
@@ -42,11 +43,16 @@ public class FilmShieldController implements DamageTakenModifier, AdvanceableLis
         originalInner=originalShield==null?null:originalShield.getInnerColor();
         originalRing=originalShield==null?null:originalShield.getRingColor();
         originalSkip=originalShield!=null&&originalShield.isSkipRendering();
-        // Compatibility constructors may be called directly. A loser must never alter the native shield.
-        if(hullmodId!=null&&!FilmShield.isSelected(ship,hullmodId)) { disposed=true; return; }
+        // Compatibility constructors may be called directly. A loser or a disabled ship must never alter the native shield.
+        if(FilmShield.isDisabled(ship)||(hullmodId!=null&&!FilmShield.isSelected(ship,hullmodId))) { disposed=true; return; }
+        // Native control without a ShieldAPI (e.g. another hullmod removed the shield first) stays inert instead of
+        // failing ship creation; shieldless designs should use EXTERNAL.
         if(profile.control==ShieldProfile.Control.NATIVE_SHIELD && originalShield==null
-                && !(profile.followParent&&ship.isStationModule()&&ship.getParentStation()!=null))
-            throw new IllegalArgumentException("Native control requires a shield; use EXTERNAL for shieldless ships");
+                && !(profile.followParent&&ship.isStationModule()&&ship.getParentStation()!=null)) {
+            LOG.warn("[FILMSHIELD] Native control skipped: ship has no shield (profile="+profile.id
+                    +", hull="+(ship.getHullSpec()==null?"?":ship.getHullSpec().getHullId())+"); use EXTERNAL for shieldless ships");
+            disposed=true; return;
+        }
         FilmShield.claim(this);
         init(ship);
     }
@@ -181,6 +187,7 @@ public class FilmShieldController implements DamageTakenModifier, AdvanceableLis
     }
     private void finishArmorRestore() { if(pendingArmorRestore) { retainArmor(); pendingArmorRestore=false; } }
     public void saveArmor() {
+        if(disposed) return;
         ArmorGridAPI armor=ship.getArmorGrid();
         if(armor==null) return;
         float[][] grid=armor.getGrid();
@@ -191,6 +198,7 @@ public class FilmShieldController implements DamageTakenModifier, AdvanceableLis
         }
     }
     public void retainArmor() {
+        if(disposed) return;
         ArmorGridAPI armor=ship.getArmorGrid();
         if(armor==null||armorGridCopy==null) return;
         float[][] grid=armor.getGrid();
@@ -199,6 +207,7 @@ public class FilmShieldController implements DamageTakenModifier, AdvanceableLis
                 if(grid[x][y]<armorGridCopy[x][y]) armor.setArmorValue(x,y,armorGridCopy[x][y]);
     }
     public void immuneEMPEffects(float level) {
+        if(disposed) return;
         ship.getMutableStats().getEmpDamageTakenMult().modifyMult(profile.modifierId,level<0.25f?(0.25f-level)*4f:0f);
     }
     private float computeDamageToShield(DamageAPI damage, ShipAPI source, boolean isBeam) {

@@ -139,8 +139,8 @@ public class FilmShieldRenderer extends BaseCombatLayeredRenderingPlugin {
         currentShader = -1;
 
         try {
-            // 获取着色器管理器实例
-            if (shaderManager == null) shaderManager = new FilmShieldShaderManager();
+            // 着色器管理器进程内共享：引擎在战斗结束时不调用本插件的 cleanup，按场新建会每场泄漏一个着色器程序
+            if (shaderManager == null) shaderManager = FilmShieldShaderManager.getShared();
 
 
             // 通过着色器管理器创建着色器
@@ -242,7 +242,7 @@ public class FilmShieldRenderer extends BaseCombatLayeredRenderingPlugin {
             vboInitialized = false;
         }
         cleanupNormalResources();
-        if(shaderManager!=null) shaderManager.cleanup();
+        // 共享着色器程序跨战斗复用，不在单个渲染器清理时删除
         renderableShieldShips.clear();
         shieldSpreadProgress.clear();
         shaderInitialized=false;
@@ -484,6 +484,9 @@ public class FilmShieldRenderer extends BaseCombatLayeredRenderingPlugin {
     private boolean shouldRenderWeapon(WeaponAPI weapon) {
         // 优化的武器过滤逻辑
         if (weapon.getSprite() == null)
+            return false;
+        // 与抽离前的 Moci 渲染一致：停用（受损待修）的武器不参与贴膜遮罩
+        if (weapon.isDisabled())
             return false;
 
         // 只渲染可见的硬点和炮塔武器

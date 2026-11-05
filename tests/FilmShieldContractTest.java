@@ -176,6 +176,46 @@ public final class FilmShieldContractTest {
                 .control(ShieldProfile.Control.EXTERNAL).nativeShieldArc(360f).build());
         external.setEnabled(true);check(external.isActive(),"arc override is harmless without ShieldAPI");FilmShield.detach(shieldless.ship);
     }
+    /** 1.3.0: a native-shield profile on a ship whose ShieldAPI is missing (e.g. removed by another hullmod) must not crash ship creation. */
+    static void shieldlessNativeTests() {
+        List<String> warnings=new ArrayList<>();
+        org.apache.log4j.AppenderSkeleton capture=new org.apache.log4j.AppenderSkeleton() {
+            @Override protected void append(org.apache.log4j.spi.LoggingEvent event) {
+                if(event.getLevel()==org.apache.log4j.Level.WARN) warnings.add(event.getRenderedMessage());
+            }
+            @Override public boolean requiresLayout() { return false; }
+            @Override public void close() {}
+        };
+        org.apache.log4j.Logger root=org.apache.log4j.Logger.getRootLogger();
+        root.addAppender(capture);
+        try {
+            Hull bare=new Hull(false);
+            ShieldProfile nativeProfile=ShieldProfile.builder("native_shieldless").build();
+            FilmShieldController inert=FilmShield.attach(bare.ship,nativeProfile);
+            check(inert!=null,"native profile without ShieldAPI returns a controller instead of throwing");
+            check(FilmShield.find(bare.ship)==null&&FilmShield.visual(bare.ship)==null,"inert native controller does not own the ship");
+            check(bare.listeners.isEmpty()&&bare.custom.isEmpty(),"inert native controller adds no listener or custom data");
+            check(warnings.size()==1&&warnings.get(0).contains("native_shieldless"),"missing native shield is logged once with the profile id");
+            inert.setEnabled(true);inert.advance(.1f);inert.immuneEMPEffects(0f);
+            check(!inert.isActive(),"inert native controller never activates");
+            Hit hit=new Hit();
+            check(inert.modifyDamageTaken(null,bare.ship,hit.api,null,false)==null,"inert native controller ignores hits");
+            near(1,hit.modifier.getModifiedValue(),"inert native controller applies no damage modifier");
+            near(0,bare.flux,"inert native controller adds no flux");
+            check(bare.stats.isEmpty(),"inert native controller touches no ship stats");
+            FilmShieldController direct=new FilmShieldController(bare.ship,nativeProfile,null);
+            check(!direct.isActive()&&FilmShield.find(bare.ship)==null&&warnings.size()==2,"direct native construction without ShieldAPI is inert too");
+            FilmShieldController owner=FilmShield.attach(bare.ship,external("external_after_native"));
+            check(FilmShield.find(bare.ship)==owner&&bare.listeners.size()==1,"an EXTERNAL owner can still take the shieldless ship");
+            FilmShield.detach(bare.ship);
+            check(FilmShield.find(bare.ship)==null&&bare.listeners.isEmpty(),"EXTERNAL owner detaches cleanly");
+            Hull disabled=new Hull(false);disabled.hullmods.add(FilmShield.DISABLE_HULLMOD_ID);
+            FilmShield.attach(disabled.ship,nativeProfile);
+            check(warnings.size()==2,"a disabled ship skips silently without the missing-shield warning");
+        } finally {
+            root.removeAppender(capture);
+        }
+    }
     static void priorityTests() {
         Map<String,HullModEffect> effects=new HashMap<>();
         for(String id:Arrays.asList("moci","vector","red")) effects.put(id,new FilmShieldHullmod());
@@ -243,9 +283,118 @@ public final class FilmShieldContractTest {
         FilmShield.detach(parent.ship);check(FilmShield.find(local.ship)==own,"parent cleanup preserves module's independent provider");
         Global.setSettings(null);
     }
-    public static void main(String[] args) {
+    static void disableTests() {
+        Map<String,HullModEffect> effects=new HashMap<>();
+        effects.put("moci",new FilmShieldHullmod());effects.put("red",new FilmShieldHullmod());
+        effects.put("ordinary",new BaseHullMod());
+        HullModEffect toggle=new FilmShieldDisableHullmod();effects.put(FilmShield.DISABLE_HULLMOD_ID,toggle);
+        Global.setSettings(proxy(SettingsAPI.class,(m,a)->{
+            if(m.getName().equals("getHullModSpec")) return proxy(HullModSpecAPI.class,(sm,sa)->
+                    sm.getName().equals("getEffect")?effects.get((String)a[0]):zero(sm.getReturnType()));
+            return zero(m.getReturnType());
+        }));
+        check(!(toggle instanceof FilmShieldProvider),"disable switch is not a provider");
+        for(boolean switchFirst:new boolean[]{true,false}) {
+            Hull o=new Hull(true);
+            o.hullmods.addAll(switchFirst?Arrays.asList(FilmShield.DISABLE_HULLMOD_ID,"moci"):Arrays.asList("moci",FilmShield.DISABLE_HULLMOD_ID));
+            check(FilmShield.isDisabled(o.ship)&&FilmShield.getSelectedHullmodId(o.ship)==null,"switch wins regardless of order: "+switchFirst);
+        }
+        Hull d=new Hull(true);d.hullmods.addAll(Arrays.asList("moci",FilmShield.DISABLE_HULLMOD_ID));
+        check("moci".equals(FilmShield.getLocalProviderHullmodId(d.ship)),"raw provider lookup ignores the switch");
+        check(FilmShield.getLocalSelectedHullmodId(d.ship)==null&&!FilmShield.isSelected(d.ship,"moci"),"disabled ship selects nothing");
+        effects.get("moci").applyEffectsAfterShipCreation(d.ship,"moci");
+        check(d.listeners.isEmpty()&&d.custom.isEmpty(),"standard hullmod callback skipped");
+        near(120,d.arc,"disabled ship keeps native arc");near(90,d.radius,"disabled ship keeps native radius");
+        check(!d.skip&&d.inner.equals(Color.BLUE)&&d.ring.equals(Color.CYAN),"disabled ship keeps native render and colors");
+        check(FilmShield.attach(d.ship,ShieldProfile.builder("moci").hullmodId("moci").build())==null,"bound attach returns null");
+        check(FilmShield.attach(d.ship,external("red"),"red")==null,"explicit bound attach returns null");
+        FilmShieldController inert=FilmShield.attach(d.ship,ShieldProfile.builder("unbound").build());
+        check(inert!=null&&!inert.isActive(),"unbound attach gets an inert controller");
+        check(d.listeners.isEmpty()&&FilmShield.find(d.ship)==null&&FilmShield.visual(d.ship)==null,"inert controller has no listener or ownership");
+        inert.setEnabled(true);check(!inert.isActive(),"inert controller cannot be enabled");
+        Hit hit=new Hit();
+        check(inert.modifyDamageTaken(null,d.ship,hit.api,null,false)==null,"inert controller intercepts nothing");
+        near(0,d.flux,"inert controller charges no flux");near(1,hit.modifier.getModifiedValue(),"inert controller leaves damage alone");
+        inert.immuneEMPEffects(.5f);near(1,d.mutable.getEmpDamageTakenMult().getModifiedValue(),"inert controller adds no EMP modifier");
+        d.armor[0][0]=50;inert.saveArmor();d.armor[0][0]=10;inert.retainArmor();near(10,d.armor[0][0],"inert controller never restores armor");
+        FilmShieldController direct=new FilmShieldController(d.ship,ShieldProfile.builder("direct").build());
+        check(!direct.isActive()&&FilmShield.find(d.ship)==null,"direct constructor does not claim");near(120,d.arc,"direct constructor keeps native arc");
+        FilmShield.claim(direct);check(FilmShield.find(d.ship)==null&&FilmShield.visual(d.ship)==null,"claim is a no-op");
+        check(!FilmShield.registerVisual(d.ship,()->true,"moci"),"bound visual rejected");
+        FilmShield.registerVisual(d.ship,()->true);check(FilmShield.visual(d.ship)==null,"unbound visual ignored");
+        Hull bare=new Hull(false);bare.hullmods.add(FilmShield.DISABLE_HULLMOD_ID);
+        FilmShieldController bareController=FilmShield.attach(bare.ship,ShieldProfile.builder("bare").build());
+        check(bareController!=null&&!bareController.isActive(),"native profile on a disabled shieldless ship does not throw");
+        Hull station=new Hull(false),child=new Hull(false),ownModule=new Hull(false);
+        station.hullmods.addAll(Arrays.asList("moci",FilmShield.DISABLE_HULLMOD_ID));
+        child.parent=station.ship;ownModule.parent=station.ship;ownModule.hullmods.add("red");
+        station.modules.add(child.ship);station.modules.add(ownModule.ship);
+        ShieldProfile sp=ShieldProfile.builder("station").hullmodId("moci").control(ShieldProfile.Control.EXTERNAL).build();
+        check(FilmShield.isDisabled(child.ship)&&FilmShield.getSelectedHullmodId(child.ship)==null,"station switch covers modules");
+        check(FilmShield.attach(station.ship,sp)==null,"disabled station attaches nothing");
+        check(FilmShield.attach(ownModule.ship,external("own"),"red")==null&&ownModule.listeners.isEmpty(),"module's own provider skipped under a disabled station");
+        FilmShield.attachModules(station.ship,sp);FilmShield.attachModules(station.ship,external("unbound_station"));
+        check(FilmShield.find(child.ship)==null&&child.listeners.isEmpty(),"attachModules skips disabled modules");
+        Hull mother=new Hull(false),on=new Hull(false),off=new Hull(false);mother.hullmods.add("moci");
+        on.parent=mother.ship;off.parent=mother.ship;off.hullmods.add(FilmShield.DISABLE_HULLMOD_ID);
+        mother.modules.add(on.ship);mother.modules.add(off.ship);
+        FilmShieldController mc=FilmShield.attach(mother.ship,sp);mc.setEnabled(true);FilmShield.attachModules(mother.ship,sp);
+        check(FilmShield.find(off.ship)==null&&off.listeners.isEmpty()&&!FilmShield.isSelected(off.ship,"moci"),"module switch skips only that module");
+        check(FilmShield.find(on.ship)!=null&&FilmShield.find(on.ship).isActive(),"sibling module still inherits the station shield");
+        FilmShield.detach(mother.ship);check(FilmShield.find(on.ship)==null,"station cleanup unchanged");
+        Hull suppressedSwitch=new Hull(true);suppressedSwitch.hullmods.addAll(Arrays.asList(FilmShield.DISABLE_HULLMOD_ID,"moci"));
+        suppressedSwitch.suppressed.add(FilmShield.DISABLE_HULLMOD_ID);
+        check(!FilmShield.isDisabled(suppressedSwitch.ship)&&"moci".equals(FilmShield.getSelectedHullmodId(suppressedSwitch.ship)),"suppressed switch is inactive");
+        Hull plain=new Hull(true);plain.hullmods.add("ordinary");
+        Hull provider=new Hull(true);provider.hullmods.add("moci");
+        Hull providerModule=new Hull(false);providerModule.parent=provider.ship;
+        check(toggle.isApplicableToShip(plain.ship)&&toggle.isApplicableToShip(null),"switch never blocks a built-in");
+        check(!toggle.showInRefitScreenModPickerFor(plain.ship)&&!toggle.showInRefitScreenModPickerFor(null),"switch hidden without film shield");
+        check(toggle.showInRefitScreenModPickerFor(provider.ship)&&toggle.showInRefitScreenModPickerFor(d.ship),"switch offered on film shield ships");
+        check(toggle.showInRefitScreenModPickerFor(providerModule.ship),"switch offered on modules of film shield stations");
+        Hull loop=new Hull(false);loop.parent=loop.ship;
+        check(!FilmShield.isDisabled(loop.ship)&&FilmShield.getSelectedHullmodId(loop.ship)==null&&!toggle.showInRefitScreenModPickerFor(loop.ship),"self-parent terminates");
+        Global.setSettings(null);
+        Hull noSettings=new Hull(true);noSettings.hullmods.add(FilmShield.DISABLE_HULLMOD_ID);
+        FilmShieldController noSettingsController=FilmShield.attach(noSettings.ship,ShieldProfile.builder("no_settings").build());
+        check(FilmShield.isDisabled(noSettings.ship)&&noSettings.listeners.isEmpty()&&!noSettings.skip,"switch detection needs no settings");
+        near(120,noSettings.arc,"no-settings disabled ship keeps native arc");check(!noSettingsController.isActive(),"no-settings controller inert");
+        check(!FilmShield.isDisabled(null),"null ship is not disabled");
+    }
+    static List<String> csvRow(String line) {
+        List<String> out=new ArrayList<>();StringBuilder cell=new StringBuilder();boolean quoted=false;
+        for(int i=0;i<line.length();i++) {
+            char ch=line.charAt(i);
+            if(quoted) { if(ch!='"') cell.append(ch); else if(i+1<line.length()&&line.charAt(i+1)=='"') { cell.append('"');i++; } else quoted=false; }
+            else if(ch=='"') quoted=true;
+            else if(ch==',') { out.add(cell.toString());cell.setLength(0); }
+            else cell.append(ch);
+        }
+        out.add(cell.toString());return out;
+    }
+    /** hull_mods.csv must name loadable effect classes and existing sprites; a typo here only fails in game. */
+    static void dataTests() throws Exception {
+        java.nio.file.Path root=java.nio.file.Paths.get(FilmShieldContractTest.class.getProtectionDomain().getCodeSource().getLocation().toURI()).getParent().getParent();
+        List<String> lines=java.nio.file.Files.readAllLines(root.resolve("data/hullmods/hull_mods.csv"),java.nio.charset.StandardCharsets.UTF_8);
+        List<String> header=csvRow(lines.get(0));
+        Map<String,List<String>> rows=new HashMap<>();
+        for(String line:lines.subList(1,lines.size())) if(!line.trim().isEmpty()) {
+            List<String> row=csvRow(line);check(row.size()==header.size(),"hull_mods.csv column count: "+line);rows.put(row.get(1),row);
+        }
+        for(String id:Arrays.asList("filmshield_surface",FilmShield.DISABLE_HULLMOD_ID)) {
+            List<String> row=rows.get(id);check(row!=null,"hull_mods.csv row: "+id);
+            check(HullModEffect.class.isAssignableFrom(Class.forName(row.get(header.indexOf("script")))),"script is a hullmod effect: "+id);
+            check(java.nio.file.Files.isRegularFile(root.resolve(row.get(header.indexOf("sprite")))),"sprite exists: "+id);
+        }
+        List<String> toggle=rows.get(FilmShield.DISABLE_HULLMOD_ID);
+        check(FilmShieldDisableHullmod.class.getName().equals(toggle.get(header.indexOf("script"))),"disable row uses the switch class");
+        check("false".equalsIgnoreCase(toggle.get(header.indexOf("hidden")))&&"true".equalsIgnoreCase(toggle.get(header.indexOf("unlocked"))),"disable switch is unlocked and visible");
+        check(toggle.get(header.indexOf("tags")).contains("no_build_in"),"disable switch cannot be built in as an s-mod");
+    }
+    public static void main(String[] args) throws Exception {
         Global.setCombatEngine(null);
         nativeArcTests();
+        shieldlessNativeTests();
         reject(()->ShieldProfile.builder("bad").fluxPerDamage(Float.NaN).build(),"reject NaN");
         reject(()->ShieldProfile.builder("bad").fragmentationMultiplier(-1).build(),"reject negative multiplier");
         Hull h=new Hull(false); ShieldProfile profile=external("test");
@@ -294,6 +443,8 @@ public final class FilmShieldContractTest {
         Hull legacyFrag=new Hull(false);FilmShieldController legacyShield=FilmShield.attach(legacyFrag.ship,ShieldProfile.builder("legacy").control(ShieldProfile.Control.EXTERNAL).fragmentationMultiplier(.25f).build());legacyShield.setEnabled(true);
         legacyShield.modifyDamageTaken(null,legacyFrag.ship,fragHit.api,null,false);near(6.25f,legacyFrag.flux,"Moci extra fragmentation multiplier retained");
         priorityTests();
+        disableTests();
+        dataTests();
         Map<String,Object> combatData=new HashMap<>();boolean[] paused={true};
         Global.setCombatEngine(proxy(CombatEngineAPI.class,(m,a)->{
             if(m.getName().equals("isPaused")) return paused[0];
