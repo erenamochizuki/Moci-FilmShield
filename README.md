@@ -2,7 +2,7 @@
 
 源码仓库：[erenamochizuki/Moci-FilmShield](https://github.com/erenamochizuki/Moci-FilmShield)。
 
-独立 mod ID：`moci_filmshield`；版本：1.1.0；API 主版本：1。目标环境为 **Starsector 0.98 / Java 17**。
+独立 mod ID：`moci_filmshield`；版本：1.2.0；API 主版本：1。目标环境为 **Starsector 0.98 / Java 17**。
 
 玩家与接入者请先阅读本目录的 [接入与兼容说明.md](接入与兼容说明.md)，该文件也随游戏用发布包提供，包含多个贴膜盾同时安装时的优先规则。
 
@@ -24,14 +24,14 @@
 
 修改公共源码后，先构建本前置，再构建 Moci。主工程为接口编译加入公共源码路径，但明确从 MociShipPack.jar 排除 `org/moci/filmshield/**`；实际运行始终使用独立前置 JAR，不能把公共类再打进其他 mod。主工程编译通过不代表已更新前置 JAR。
 
-运行 `./package.ps1` 构建并生成 `releases/Moci的贴膜盾前置-1.1.0.zip`；已完成构建时可加 `-SkipBuild`。游戏用发布包包含 mod_info.json、jars、data、graphics，以及 README、接入与兼容说明、验证记录和接入示例。src、tests 随源码仓库提供。
+运行 `./package.ps1` 构建并生成 `releases/Moci的贴膜盾前置-1.2.0.zip`；已完成构建时可加 `-SkipBuild`。游戏用发布包包含 mod_info.json、jars、data、graphics，以及 README、接入与兼容说明、验证记录和接入示例。src、tests 随源码仓库提供。
 
 ## 接入方式
 
 依赖声明：
 
 ```json
-{"id":"moci_filmshield","name":"Moci的贴膜盾前置","version":"1.1.0"}
+{"id":"moci_filmshield","name":"Moci的贴膜盾前置","version":"1.2.0"}
 ```
 
 1. **只写舰船数据**：将 `filmshield_surface` 加入 builtInMods。该通用船插隐藏于普通安装列表，不自动加入任何商店或船只；跟随原版护盾开关，要求有原版护盾。
@@ -42,15 +42,31 @@
 
 ## 可扩展点与约束
 
-- `ShieldProfile`：控制模式、幅能系数、旧版额外破片系数、模块跟随、状态文案、低/高压力颜色、伤害 modifier ID。
+- `ShieldProfile`：控制模式、原版盾角策略、幅能系数、旧版额外破片系数、模块跟随、状态文案、低/高压力颜色、伤害 modifier ID。
 - `FilmShieldProvider` / `FilmShield.getSelectedHullmodId` / `FilmShield.isSelected`：识别参与船插并检查优先级；自有伤害/池/UI 必须先检查再创建。选择与装配列表一起在舰船创建时确定；战斗中动态修改列表应重建舰船，不支持无缝热切换已有监听器。
 - `ShieldHooks`：命中是否接管、最终幅能调整、吸收后的通知；允许其他 mod 接入过滤和附加效果。回调在战斗线程执行，不得抛异常、操作 GL 或递归触发 attach。
 - `ShieldVisual` / `ShieldHit`：独立于伤害实现的展示协议。以后增加默认方法保持源码接入兼容；不能重解释现有方法语义，破坏性变更提升 API 主版本。
 - `FilmShield.registerNormalTextureDataCSV(path)`：按 GraphicsLib texture CSV 格式注册法线备用表，仅取 map=normal；素材 ID 和路径由内容 mod 自己命名。
-- `FilmShield.detach(ship)`：清理伤害/EMP修正、监听器和登记，恢复原版护盾半径/角度/颜色/绘制开关，并清理同 profile 的继承模块。外部纯视觉实现使用 unregisterVisual 并传回原适配器实例。
+- `FilmShield.detach(ship)`：清理伤害/EMP修正、监听器和登记，恢复原版护盾半径/颜色/绘制开关；仅在配置覆盖盾角时恢复原盾角，并清理同 profile 的继承模块。外部纯视觉实现使用 unregisterVisual 并传回原适配器实例。
 - 原版模式的实际幅能 = 伤害类型/舰体及攻击方修正 × 舰体护盾效率 × profile.fluxPerDamage × 护盾属性修正。外控模式直接使用 profile.fluxPerDamage，不读取舰体护盾效率。
 - 延续贴膜盾原来的非零残余伤害处理（倍率 0.0001）和已吸收命中的装甲恢复；它不是引擎原生护盾碰撞面，不承诺触发其他 mod 的 shieldHit=true 特殊逻辑。若第三方自有护盾有特殊结算，优先选视觉接口。
 - 护盾溢出、特殊 EMP/碰撞和其他伤害监听器的先后顺序仍需游戏内联调；编译与替身测试不证明所有 mod 组合兼容。
+
+## 原版盾角可选配置（1.2.0）
+
+在自己船插的 `ShieldProfile.builder(...)` 链中选择一项：
+
+| 配置 | 行为 |
+|---|---|
+| 不设置，或 `.nativeShieldArc(0f)` | 沿用旧行为，将原版碰撞盾角设为 0 度 |
+| `.preserveNativeShieldArc()` | 初始化和卸载均不写原版盾角，保留舰船及其他 mod 的调整 |
+| `.nativeShieldArc(90f)` | 将原版碰撞盾角设为 90 度；允许有限的 0～360 度数值，卸载时恢复接入前的角度 |
+
+这项策略按 profile 独立设置，两种控制模式都适用；继承母舰 profile 的模块沿用同一策略，无原版护盾时无需操作。链中最后一次盾角策略调用生效。新接口要求最低依赖版本 1.2.0，API 主版本仍为 1；旧接入无需修改，继续使用 0 度。
+
+这里配置的是原版碰撞盾角，不是贴膜防御覆盖角。非零原版盾角仍可能先拦截来袭伤害；`shieldHit=true` 的命中由原版结算，公共贴膜监听器跳过它，不重复添加贴膜幅能或吸收效果。未被原版盾拦截的命中仍由贴膜处理。隐藏原版护盾的绘制并不关闭其碰撞。
+
+本选项只控制盾角；原有的原版护盾半径调整、隐藏绘制和透明颜色处理仍会执行。因此“保留盾角”不等于完全保留原版护盾，也不能保证任意第三方护盾兼容。若需完全自管原版护盾、结算或特殊 `shieldHit` 行为，使用 `registerVisual` 视觉接口。具体例子和验收场景见 [接入与兼容说明.md](接入与兼容说明.md)。
 
 ## Moci 迁移边界
 

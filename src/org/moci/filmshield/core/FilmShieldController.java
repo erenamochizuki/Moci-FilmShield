@@ -12,7 +12,7 @@ import org.lazywizard.lazylib.VectorUtils;
 import org.lwjgl.util.vector.Vector2f;
 import org.moci.filmshield.api.*;
 
-/** Surface interception engine. A native ShieldAPI is a control source, not a collision surface. */
+/** Surface interception engine. Native collision is disabled by default, configurable per profile. */
 public class FilmShieldController implements DamageTakenModifier, AdvanceableListener, ShieldVisual {
     public static final String KEY="filmshield_absorb";
     public static final Color TEXT_COLOR=new Color(255,155,255,255);
@@ -52,7 +52,7 @@ public class FilmShieldController implements DamageTakenModifier, AdvanceableLis
     }
     public void init(ShipAPI ignored) {
         if(originalShield!=null) {
-            originalShield.setArc(0f);
+            if(profile.overrideNativeShieldArc) originalShield.setArc(profile.nativeShieldArc);
             originalShield.setRadius(Math.max(10f,ship.getCollisionRadius()-ship.getHullSize().ordinal()*10f));
             originalShield.setSkipRendering(true);
             originalShield.setInnerColor(new Color(0,0,0,0));
@@ -167,7 +167,8 @@ public class FilmShieldController implements DamageTakenModifier, AdvanceableLis
         modifiedDamage.clear(); hits.clear();
         ship.getMutableStats().getEmpDamageTakenMult().unmodify(profile.modifierId);
         if(originalShield!=null&&ship.getShield()==originalShield) {
-            originalShield.setArc(originalArc); originalShield.setRadius(originalRadius);
+            if(profile.overrideNativeShieldArc) originalShield.setArc(originalArc);
+            originalShield.setRadius(originalRadius);
             originalShield.setSkipRendering(originalSkip); originalShield.setInnerColor(originalInner); originalShield.setRingColor(originalRing);
         }
         if(profile.followParent&&ship.isShipWithModules()) for(ShipAPI module:ship.getChildModulesCopy()) {

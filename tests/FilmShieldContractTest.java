@@ -30,6 +30,7 @@ public final class FilmShieldContractTest {
     static class Hull {
         boolean alive=true,hulk,removed,phased,overloaded,shieldOn=true,skip;
         boolean lastHard; float flux,arc=120,radius=90;
+        int arcWrites;
         Color inner=Color.BLUE,ring=Color.CYAN;
         float[][] armor={{100,100},{100,100}};
         final Map<String,Object> custom=new HashMap<>();
@@ -64,7 +65,7 @@ public final class FilmShieldContractTest {
         });
         final ShieldAPI shield=proxy(ShieldAPI.class,(m,a)->{
             switch(m.getName()) {
-                case "getArc":return arc; case "setArc":arc=(Float)a[0];return null;
+                case "getArc":return arc; case "setArc":arcWrites++;arc=(Float)a[0];return null;
                 case "getRadius":return radius; case "setRadius":radius=(Float)a[0];return null;
                 case "getInnerColor":return inner; case "setInnerColor":inner=(Color)a[0];return null;
                 case "getRingColor":return ring; case "setRingColor":ring=(Color)a[0];return null;
@@ -119,6 +120,62 @@ public final class FilmShieldContractTest {
     }
     static ShieldProfile external(String id) { return ShieldProfile.builder(id).control(ShieldProfile.Control.EXTERNAL).build(); }
     static void reject(Runnable action,String label) { boolean failed=false;try{action.run();}catch(IllegalArgumentException|IllegalStateException e){failed=true;}check(failed,label); }
+    static void nativeArcTests() {
+        for(float invalid:new float[]{-1f,360.1f,Float.NaN,Float.POSITIVE_INFINITY,Float.NEGATIVE_INFINITY,Float.MAX_VALUE})
+            reject(()->ShieldProfile.builder("invalid_arc").nativeShieldArc(invalid),"reject invalid native arc: "+invalid);
+        ShieldProfile defaults=ShieldProfile.builder("arc_default").build();
+        check(defaults.overrideNativeShieldArc&&defaults.nativeShieldArc==0f,"legacy profiles still override arc to zero");
+        check(!ShieldProfile.builder("preserve_last").nativeShieldArc(60f).preserveNativeShieldArc().build().overrideNativeShieldArc,
+                "preserve after override wins");
+        check(ShieldProfile.builder("override_last").preserveNativeShieldArc().nativeShieldArc(60f).build().overrideNativeShieldArc,
+                "override after preserve wins");
+        for(ShieldProfile.Control control:ShieldProfile.Control.values()) {
+            Hull preserved=new Hull(true);
+            ShieldProfile keep=ShieldProfile.builder("arc_preserve").control(control).preserveNativeShieldArc().build();
+            FilmShieldController c=FilmShield.attach(preserved.ship,keep);c.setEnabled(true);
+            near(120,preserved.arc,"preserve mode retains native arc: "+control);
+            check(preserved.arcWrites==0,"preserve attach does not write arc");
+            check(preserved.skip&&preserved.radius==80f,"arc option leaves existing rendering/radius behavior intact");
+            preserved.shield.setArc(75f); // A different mod changes the arc after attachment.
+            c.advance(.1f);
+            check(preserved.arcWrites==1,"advance does not overwrite third-party arc");
+            Hit nativeHit=new Hit();
+            check(c.modifyDamageTaken(null,preserved.ship,nativeHit.api,null,true)==null,"native shield hits bypass film settlement");
+            near(0,preserved.flux,"native shield hit adds no film flux");
+            near(1,nativeHit.modifier.getModifiedValue(),"native shield hit receives no film damage modifier");
+            Hit hullHit=new Hit();c.modifyDamageTaken(null,preserved.ship,hullHit.api,null,false);
+            near(control==ShieldProfile.Control.NATIVE_SHIELD?80f:100f,preserved.flux,"film still absorbs hull hits with native arc retained");
+            FilmShield.detach(preserved.ship);
+            near(75,preserved.arc,"preserve detach retains third-party arc");
+            check(preserved.arcWrites==1,"preserve detach never writes arc");
+            near(90,preserved.radius,"preserve mode still restores radius");
+            check(!preserved.skip&&preserved.inner.equals(Color.BLUE),"preserve mode still restores rendering");
+            for(float degrees:new float[]{0f,0.1f,90f,360f}) {
+                Hull custom=new Hull(true);
+                ShieldProfile p=ShieldProfile.builder("arc_custom").control(control).nativeShieldArc(degrees).build();
+                FilmShieldController customController=FilmShield.attach(custom.ship,p);
+                near(degrees,custom.arc,"custom native arc applied: "+control);
+                check(FilmShield.attach(custom.ship,p)==customController&&custom.arcWrites==1,"repeated attach does not reapply arc");
+                FilmShield.detach(custom.ship);near(120,custom.arc,"custom native arc restores original on detach");
+                check(custom.arcWrites==2,"custom arc written once on attach and once on detach");
+            }
+        }
+        Hull parent=new Hull(true),module=new Hull(true);
+        module.parent=parent.ship;parent.modules.add(module.ship);module.arc=45f;
+        ShieldProfile inherited=ShieldProfile.builder("arc_modules").nativeShieldArc(30f).build();
+        FilmShield.attach(parent.ship,inherited);FilmShield.attachModules(parent.ship,inherited);
+        near(30,parent.arc,"parent custom arc");near(30,module.arc,"inherited module custom arc");
+        FilmShield.detach(parent.ship);
+        near(120,parent.arc,"parent restores its original arc");near(45,module.arc,"module restores its own original arc");
+        ShieldProfile keep=ShieldProfile.builder("preserve_modules").preserveNativeShieldArc().build();
+        FilmShield.attach(parent.ship,keep);FilmShield.attachModules(parent.ship,keep);
+        module.arc=55f;FilmShield.detach(parent.ship);
+        near(55,module.arc,"inherited preserve mode retains module changes");
+        Hull shieldless=new Hull(false);
+        FilmShieldController external=FilmShield.attach(shieldless.ship,ShieldProfile.builder("arc_shieldless")
+                .control(ShieldProfile.Control.EXTERNAL).nativeShieldArc(360f).build());
+        external.setEnabled(true);check(external.isActive(),"arc override is harmless without ShieldAPI");FilmShield.detach(shieldless.ship);
+    }
     static void priorityTests() {
         Map<String,HullModEffect> effects=new HashMap<>();
         for(String id:Arrays.asList("moci","vector","red")) effects.put(id,new FilmShieldHullmod());
@@ -188,6 +245,7 @@ public final class FilmShieldContractTest {
     }
     public static void main(String[] args) {
         Global.setCombatEngine(null);
+        nativeArcTests();
         reject(()->ShieldProfile.builder("bad").fluxPerDamage(Float.NaN).build(),"reject NaN");
         reject(()->ShieldProfile.builder("bad").fragmentationMultiplier(-1).build(),"reject negative multiplier");
         Hull h=new Hull(false); ShieldProfile profile=external("test");
