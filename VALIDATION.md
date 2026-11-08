@@ -1,5 +1,19 @@
 # 验证记录
 
+## 1.3.1：渲染首帧着色器初始化（2026-11-08）
+
+现场问题：GN 护盾开启后的头 1 秒左右没有着色器，走固定管线回退，整艘船被一块纯色实心色块覆盖；进战斗后等几秒再开盾正常，出问题后原地等几秒（即使暂停）也会自行恢复。定位到 `FilmShieldRenderer.ensureShaderInitializedFromRender`：`shaderRetryTimer += elapsed` 在比较之前执行，第一次 `initializeShader()` 也必须先攒满 `SHADER_RETRY_INTERVAL = 1f` 秒。修复为第一帧立即尝试初始化，失败后再回到 1 秒节流重试。
+
+本次使用 Starsector 0.98 本地 API、JDK 17，运行 `build.ps1` 独立 Maven clean package 与 246 项游戏接口替身合约检查，全部通过（契约测试未改，本次无接口变化，API 主版本保持 1）；更新工作区 `jars/FilmShield.jar`（sha256 `0793594e…f97f6273`，59547 字节）。
+
+库 JAR 与 1.3.0 的 `e6eeffdc…247a53ef`（59280 字节）逐条目比对：25 个条目中新增 0、删除 0、变化 5——`FilmShieldRenderer.class`（真实逻辑变化）、`FilmShieldRenderer$1.class` 与 `FilmShieldRenderer$ShieldRenderData.class`（指令完全相同，仅行号表平移）、`pom.properties`、`pom.xml`。全部 25 个 class 的 `javap -public` 逐行对比无差异，类清单一致，二进制兼容，Moci 与维克多无需重编。
+
+游戏内取证：`starsector.log` 中 `[GN_SHIELD] shader ready (first render frame)` 在每场战斗登场时各出现一次，均紧跟在 `[MOCI-BUS] 接管战斗` 之后，说明首帧初始化已生效。
+
+已知未修：渲染器的顶点缓冲、平面法线贴图和 512×512 法线合成纹理及帧缓冲仍按场创建；引擎不调用图层插件的 `cleanup`，这些资源每场战斗遗留一份（合成纹理约 0.75 MB）。抽离前的 Moci 实现同样如此，本次未改动。
+
+发布包：`releases/Moci的贴膜盾前置-1.3.1.zip`。
+
 ## 1.3.0：关闭贴膜盾兼容开关与抽离复查修复（2026-11-05）
 
 本次使用 Starsector 0.98 本地 API、JDK 17，运行 `build.ps1` 独立 Maven clean package 与 246 项游戏接口替身合约检查，全部通过；更新工作区 `jars/FilmShield.jar`。Moci 主工程使用更新后的公共源码 Maven 编译通过；Moci 与维克多的源码和 JAR 未修改。API 主版本保持 1，新增接口均为增量。

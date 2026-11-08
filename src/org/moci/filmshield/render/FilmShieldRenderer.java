@@ -62,6 +62,8 @@ public class FilmShieldRenderer extends BaseCombatLayeredRenderingPlugin {
     private boolean normalUniformsAvailable = false;
     private FilmShieldShaderManager shaderManager;
     private float shaderRetryTimer = 0f;
+    // 是否已经尝试过初始化：首帧立刻试一次，失败后才进入 SHADER_RETRY_INTERVAL 节流重试
+    private boolean shaderInitAttempted = false;
 
     // 着色器状态优化
     private int currentShader = -1; // 当前绑定的着色器，避免重复绑定
@@ -209,13 +211,28 @@ public class FilmShieldRenderer extends BaseCombatLayeredRenderingPlugin {
             return;
         }
 
-        shaderRetryTimer += elapsedForRetry;
-        if (shaderRetryTimer < SHADER_RETRY_INTERVAL) {
-            return;
+        // 首帧立刻尝试一次。原先必须先累计满 SHADER_RETRY_INTERVAL 才可能初始化，
+        // 于是开盾后的第一秒内一直走无着色器回退分支，表现为整船被实色色块覆盖。
+        boolean firstAttempt = !shaderInitAttempted;
+        if (firstAttempt) {
+            shaderInitAttempted = true;
+            shaderRetryTimer = 0f;
+        } else {
+            shaderRetryTimer += elapsedForRetry;
+            if (shaderRetryTimer < SHADER_RETRY_INTERVAL) {
+                return;
+            }
+            shaderRetryTimer = 0f;
         }
-        shaderRetryTimer = 0f;
 
         initializeShader();
+
+        // 一次性结果日志：便于区分「首帧就绪」与「回退若干秒后才就绪」
+        if (shaderInitialized) {
+            LOG.info("[GN_SHIELD] shader ready (" + (firstAttempt ? "first render frame" : "after fallback retry") + ")");
+        } else if (firstAttempt) {
+            LOG.warn("[GN_SHIELD] shader init failed on the first render frame; retrying every " + SHADER_RETRY_INTERVAL + "s");
+        }
     }
 
     public static FilmShieldRenderer getInstance() {
@@ -246,6 +263,8 @@ public class FilmShieldRenderer extends BaseCombatLayeredRenderingPlugin {
         renderableShieldShips.clear();
         shieldSpreadProgress.clear();
         shaderInitialized=false;
+        shaderInitAttempted=false;
+        shaderRetryTimer=0f;
         if(engine!=null && engine.getCustomData().get(RENDER_KEY)==this) engine.getCustomData().remove(RENDER_KEY);
     }
 

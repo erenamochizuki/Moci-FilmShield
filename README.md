@@ -2,7 +2,7 @@
 
 源码仓库：[erenamochizuki/Moci-FilmShield](https://github.com/erenamochizuki/Moci-FilmShield)。
 
-独立 mod ID：`moci_filmshield`；版本：1.3.0；API 主版本：1。目标环境为 **Starsector 0.98 / Java 17**。
+独立 mod ID：`moci_filmshield`；版本：1.3.1；API 主版本：1。目标环境为 **Starsector 0.98 / Java 17**。
 
 玩家与接入者请先阅读本目录的 [接入与兼容说明.md](接入与兼容说明.md)，该文件也随游戏用发布包提供，包含多个贴膜盾同时安装时的优先规则。
 
@@ -24,7 +24,7 @@
 
 修改公共源码后，先构建本前置，再构建 Moci。主工程为接口编译加入公共源码路径，但明确从 MociShipPack.jar 排除 `org/moci/filmshield/**`；实际运行始终使用独立前置 JAR，不能把公共类再打进其他 mod。主工程编译通过不代表已更新前置 JAR。
 
-运行 `./package.ps1` 构建并生成 `releases/Moci的贴膜盾前置-1.3.0.zip`；已完成构建时可加 `-SkipBuild`。游戏用发布包包含 mod_info.json、jars、data、graphics，以及 README、接入与兼容说明、验证记录和接入示例。src、tests 随源码仓库提供。
+运行 `./package.ps1` 构建并生成 `releases/Moci的贴膜盾前置-1.3.1.zip`；已完成构建时可加 `-SkipBuild`。游戏用发布包包含 mod_info.json、jars、data、graphics，以及 README、接入与兼容说明、验证记录和接入示例。src、tests 随源码仓库提供。
 
 ## 接入方式
 
@@ -34,7 +34,7 @@
 {"id":"moci_filmshield","name":"Moci的贴膜盾前置","version":"1.3.0"}
 ```
 
-依赖版本填自己用到的接口的最低版本：船插优先选择为 1.1.0，原版盾角配置为 1.2.0，关闭开关接口为 1.3.0。
+依赖版本填自己用到的接口的最低版本：船插优先选择为 1.1.0，原版盾角配置为 1.2.0，关闭开关接口为 1.3.0。1.3.1 只有渲染修复，没有接口变化。
 
 1. **只写舰船数据**：将 `filmshield_surface` 加入 builtInMods。该通用船插隐藏于普通安装列表，不自动加入任何商店或船只；跟随原版护盾开关，要求有原版护盾。
 2. **完整伤害机制**：继承 `FilmShieldHullmod`，或让自己的船插实现 `FilmShieldProvider` 并调用 `FilmShield.attach(ship, profile, hullmodId)`。也可用 `profile.hullmodId(...)` 绑定旧 attach 入口。未选中的船插返回 null，调用方必须判断；不要对它启动额外监听器或 UI。原版模式跟随原版护盾，船上没有原版护盾时只记录警告并跳过；`EXTERNAL` 模式适合没有原版护盾的船，由系统或 AI 调用 `setEnabled`，默认关闭。两种模式都在过载、排幅、相位和死亡时停用。
@@ -81,6 +81,12 @@
 - 旧入口：没有船插 ID 的旧式 `attach` 在关闭的船上返回一个不起作用的控制器（不返回 null，避免旧调用方空指针）；`registerVisual(ship, visual)` 与 `claim` 直接忽略，不报冲突。完全绕过前置、自己修改原版护盾的第三方代码不受开关约束，需要自行检查 `FilmShield.isDisabled(ship)`。
 
 其他 mod 的接入写法见 [接入与兼容说明.md](接入与兼容说明.md)。
+
+## 1.3.1 修复
+
+- 着色器改为在渲染器第一帧就初始化。之前 `ensureShaderInitializedFromRender` 先累加计时器再比较，连第一次尝试也要先攒满 1 秒，于是开盾后的头 1 秒走无着色器回退路径：模板缓冲写船体轮廓再实色填充，表现为整艘船被一块纯色实心色块盖住。现在首帧立即尝试一次，失败才回到原来的 1 秒节流重试；成功时记录 `[GN_SHIELD] shader ready (first render frame)`，首帧失败记录一条 WARN。
+- 该问题与开关、与 Moci 侧用法无关：渲染器是全局图层插件，从战斗开始就每帧绘制，所以「进战斗后等几秒再开盾」或「出问题后原地等几秒（暂停也算）」都会自行恢复。1.3.1 之后不再有这段空窗。
+- 无 OpenGL 2.0 或 `enableShaders=false` 时仍走原来的固定管线回退，行为不变。
 
 ## 1.3.0 修复
 
