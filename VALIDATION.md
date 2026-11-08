@@ -1,5 +1,27 @@
 # 验证记录
 
+## 1.3.2：拆下不再回写原版护盾（2026-11-08）
+
+现场问题：装配界面右侧舰船属性面板的「护盾角度」显示 360，而不是贴膜盾实际使用的弧度（1.3.1 之前配置成 0 时显示 0）。逐级取证（`[GN_ARC]` 诊断日志）确认：装配界面预览舰创建时 hullmod 副作用正常执行，贴膜盾把弧度写成 0.01；随后 `updateFromCurrentVariant()` 对预览舰调用一次 `advance(1.0E-4F)`，`FilmShieldController.advance` 的守卫 `if(!ship.isAlive()||ship.isHulk()||ship.wasRemoved()) dispose()` 命中（预览舰出生即 `alive=false`、`removed=true`，从未真正入场），`dispose()` 把原版护盾弧度写回 `originalArc`（船体的 360）。面板 `Math.round(arc)` 因此显示 360。
+
+修复：`dispose()`／`detach` 只清理伤害修正器、EMP 修正、命中列表、归属登记与监听器，不再回写原版护盾的弧度、半径、隐藏渲染开关和颜色；`FilmShieldController` 相应删除 `originalArc/originalRadius/originalInner/originalRing/originalSkip` 五个字段。理由是船插在战斗中不会卸下、refit 每次改装配都会重建 `ShipAPI`，回写只可能命中已消失的舰或从未入场的预览舰。
+
+契约测试：`tests/FilmShieldContractTest.java` 中四处「拆下后应还原」的断言改为「拆下不写回」（preserve 模式的半径/渲染、自定义弧只写一次、母子模块保留弧度、原版护盾的弧度/半径/渲染与颜色），其余断言不变，仍然全部通过。
+
+已知副作用：运行时主动 `detach` 一艘仍在场的舰时，贴膜盾写过的原版护盾参数会留在舰上，需要调用方自行复原；库内没有这样的调用路径。
+
+同一轮补回抽库重构时丢掉的两项运行时行为（逐行对照抽库前实现确认）：
+
+- 原版护盾朝向：开启期间 `forceFacing(Misc.normalizeAngle(ship.getFacing() + 180f))`。原版护盾拦截锥在 `isWithinArc` 与碰撞检测里都有 `max(1, activeArc)` 下限，弧角再小也留着 1° 的缝，把它甩到船尾才是「开盾瞬间不会有漏出的攻击被原版护盾结算」的正确做法。
+- 装甲冻结：`init()` 存一次 `saveArmor()`，`advance()` 里护盾开启时先 `retainArmor()` 再于末尾 `saveArmor()`。`AdvanceableListener.advance` 在碰撞与伤害之前执行，所以末尾快照必然是受损前的值，下一帧开头还原即等于「盾开着装甲不掉」。抽库后曾退化为「只回滚被吸收的命中」，观感上装甲会掉。
+
+另外记录两条实机语义：
+
+- 近战瞬时命中：`Moci_MeleeDamage.applyDamage` 把 `BeamAPI` 当伤害来源传给 `CombatEngine.applyDamage`，引擎建出的是 `isDps=false`、`dpsDuration=0` 的瞬时伤害。旧实现按「来源是 BeamAPI」判光束并乘 `dpsDuration`，结果恒为 0，贴膜盾对近战不吸收也不涨幅能。现按 `DamageAPI.isDps()` 判定，近战按全额伤害折算硬幅能。
+- 颜色 uniform：`lowColor`／`highColor` 取不到（location 为 -1）时只打 `[GN_SHIELD] color uniforms unavailable (lowColor=…, highColor=…)` 警告，不参与 `baseUniformsValid`，避免一个「盾变黑」的问题升级成「整条着色器路径失效」。
+
+发布包：`releases/Moci的贴膜盾前置-1.3.2.zip`。
+
 ## 1.3.1：渲染首帧着色器初始化（2026-11-08）
 
 现场问题：GN 护盾开启后的头 1 秒左右没有着色器，走固定管线回退，整艘船被一块纯色实心色块覆盖；进战斗后等几秒再开盾正常，出问题后原地等几秒（即使暂停）也会自行恢复。定位到 `FilmShieldRenderer.ensureShaderInitializedFromRender`：`shaderRetryTimer += elapsed` 在比较之前执行，第一次 `initializeShader()` 也必须先攒满 `SHADER_RETRY_INTERVAL = 1f` 秒。修复为第一帧立即尝试初始化，失败后再回到 1 秒节流重试。

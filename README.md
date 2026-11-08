@@ -2,7 +2,7 @@
 
 源码仓库：[erenamochizuki/Moci-FilmShield](https://github.com/erenamochizuki/Moci-FilmShield)。
 
-独立 mod ID：`moci_filmshield`；版本：1.3.1；API 主版本：1。目标环境为 **Starsector 0.98 / Java 17**。
+独立 mod ID：`moci_filmshield`；版本：1.3.2；API 主版本：1。目标环境为 **Starsector 0.98 / Java 17**。
 
 玩家与接入者请先阅读本目录的 [接入与兼容说明.md](接入与兼容说明.md)，该文件也随游戏用发布包提供，包含多个贴膜盾同时安装时的优先规则。
 
@@ -24,7 +24,7 @@
 
 修改公共源码后，先构建本前置，再构建 Moci。主工程为接口编译加入公共源码路径，但明确从 MociShipPack.jar 排除 `org/moci/filmshield/**`；实际运行始终使用独立前置 JAR，不能把公共类再打进其他 mod。主工程编译通过不代表已更新前置 JAR。
 
-运行 `./package.ps1` 构建并生成 `releases/Moci的贴膜盾前置-1.3.1.zip`；已完成构建时可加 `-SkipBuild`。游戏用发布包包含 mod_info.json、jars、data、graphics，以及 README、接入与兼容说明、验证记录和接入示例。src、tests 随源码仓库提供。
+运行 `./package.ps1` 构建并生成 `releases/Moci的贴膜盾前置-1.3.2.zip`；已完成构建时可加 `-SkipBuild`。游戏用发布包包含 mod_info.json、jars、data、graphics，以及 README、接入与兼容说明、验证记录和接入示例。src、tests 随源码仓库提供。
 
 ## 接入方式
 
@@ -34,7 +34,7 @@
 {"id":"moci_filmshield","name":"Moci的贴膜盾前置","version":"1.3.0"}
 ```
 
-依赖版本填自己用到的接口的最低版本：船插优先选择为 1.1.0，原版盾角配置为 1.2.0，关闭开关接口为 1.3.0。1.3.1 只有渲染修复，没有接口变化。
+依赖版本填自己用到的接口的最低版本：船插优先选择为 1.1.0，原版盾角配置为 1.2.0，关闭开关接口为 1.3.0。1.3.1 只有渲染修复，1.3.2 只修拆下时的行为，两者都没有接口变化。
 
 1. **只写舰船数据**：将 `filmshield_surface` 加入 builtInMods。该通用船插隐藏于普通安装列表，不自动加入任何商店或船只；跟随原版护盾开关，要求有原版护盾。
 2. **完整伤害机制**：继承 `FilmShieldHullmod`，或让自己的船插实现 `FilmShieldProvider` 并调用 `FilmShield.attach(ship, profile, hullmodId)`。也可用 `profile.hullmodId(...)` 绑定旧 attach 入口。未选中的船插返回 null，调用方必须判断；不要对它启动额外监听器或 UI。原版模式跟随原版护盾，船上没有原版护盾时只记录警告并跳过；`EXTERNAL` 模式适合没有原版护盾的船，由系统或 AI 调用 `setEnabled`，默认关闭。两种模式都在过载、排幅、相位和死亡时停用。
@@ -81,6 +81,14 @@
 - 旧入口：没有船插 ID 的旧式 `attach` 在关闭的船上返回一个不起作用的控制器（不返回 null，避免旧调用方空指针）；`registerVisual(ship, visual)` 与 `claim` 直接忽略，不报冲突。完全绕过前置、自己修改原版护盾的第三方代码不受开关约束，需要自行检查 `FilmShield.isDisabled(ship)`。
 
 其他 mod 的接入写法见 [接入与兼容说明.md](接入与兼容说明.md)。
+
+## 1.3.2 修复
+
+- 拆下贴膜盾（`dispose`／`FilmShield.detach`）不再把原版护盾的弧度、半径、隐藏渲染开关和颜色写回去，只清理伤害修正器、EMP 修正、命中列表、归属登记与监听器。船插在战斗中不会卸下，refit 每次改装配都会重建 `ShipAPI`，所以回写只可能命中已经消失的舰，或者像装配界面预览舰那样「在场但从未入场」的舰：旧行为会让预览舰的 `advance` 立刻判定为死亡并 `dispose`，把弧度写回船体的 360°，于是装配界面属性面板显示 360 而不是贴膜盾实际使用的弧度。
+- 副作用（明确记录）：如果在运行时主动 `detach` 一艘仍在场的舰，贴膜盾改过的原版护盾参数会留在该舰上，需要调用方自行复原。当前库内没有任何代码路径这样做；真要做运行时热拆，正确做法是重建舰船而不是回写参数。
+- 补回抽库时丢失的两项运行时行为。其一：贴膜盾开启期间，原版护盾的朝向被强制指到船尾（`forceFacing(船朝向 + 180°)`）。原版护盾的拦截锥有 1° 下限，把朝向甩到船尾才能保证开盾瞬间不会有漏出的攻击被原版护盾结算掉。其二：护盾开启期间装甲冻结（`init` 存一次快照，`advance` 开头还原、末尾重新快照）。`AdvanceableListener.advance` 跑在碰撞与伤害之前，末尾快照一定是受损前的值，净效果是「盾开着装甲不掉」。两项都不是 1.3.2 新引入的规则，而是抽库重构时被丢掉的旧实现。
+- 近战武器发出的瞬时命中按全额伤害结算。判据是 `DamageAPI.isDps()` 而不是「来源是不是光束」：近战把 `BeamAPI` 当伤害来源传给 `CombatEngine.applyDamage`，但引擎建出的是 `isDps=false` 的瞬时伤害，`dpsDuration` 恒为 0。按光束判据处理会把它乘成 0，等于贴膜盾对近战完全不吸收。
+- 着色器颜色 uniform（`lowColor`／`highColor`）取不到时只记一条 `[GN_SHIELD] color uniforms unavailable` 警告，不参与初始化成败判定：颜色缺失最多让盾变黑，不该让整条着色器路径退回固定管线。
 
 ## 1.3.1 修复
 

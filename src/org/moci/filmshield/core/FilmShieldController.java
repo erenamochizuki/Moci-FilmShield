@@ -5,6 +5,7 @@ import com.fs.starfarer.api.Global;
 import com.fs.starfarer.api.combat.*;
 import com.fs.starfarer.api.combat.listeners.*;
 import com.fs.starfarer.api.loading.ProjectileSpawnType;
+import com.fs.starfarer.api.util.Misc;
 import org.dark.shaders.distortion.DistortionShader;
 import org.dark.shaders.distortion.RippleDistortion;
 import org.lazywizard.lazylib.MathUtils;
@@ -26,9 +27,6 @@ public class FilmShieldController implements DamageTakenModifier, AdvanceableLis
     private final List<Hit> hits=new ArrayList<Hit>();
     private final Set<DamageAPI> modifiedDamage=Collections.newSetFromMap(new IdentityHashMap<DamageAPI,Boolean>());
     private final ShieldAPI originalShield;
-    private final float originalArc,originalRadius;
-    private final Color originalInner,originalRing;
-    private final boolean originalSkip;
     private boolean enabled,disposed,pendingArmorRestore,servicesStarted;
     private float[][] armorGridCopy;
     public FilmShieldController(ShipAPI ship,ShieldProfile profile) {
@@ -38,11 +36,6 @@ public class FilmShieldController implements DamageTakenModifier, AdvanceableLis
         if(ship==null||profile==null) throw new IllegalArgumentException("Ship and profile are required");
         this.ship=ship; this.profile=profile; this.hullmodId=hullmodId;
         originalShield=ship.getShield();
-        originalArc=originalShield==null?0:originalShield.getArc();
-        originalRadius=originalShield==null?0:originalShield.getRadius();
-        originalInner=originalShield==null?null:originalShield.getInnerColor();
-        originalRing=originalShield==null?null:originalShield.getRingColor();
-        originalSkip=originalShield!=null&&originalShield.isSkipRendering();
         // Compatibility constructors may be called directly. A loser or a disabled ship must never alter the native shield.
         if(FilmShield.isDisabled(ship)||(hullmodId!=null&&!FilmShield.isSelected(ship,hullmodId))) { disposed=true; return; }
         // Native control without a ShieldAPI (e.g. another hullmod removed the shield first) stays inert instead of
@@ -64,6 +57,8 @@ public class FilmShieldController implements DamageTakenModifier, AdvanceableLis
             originalShield.setInnerColor(new Color(0,0,0,0));
             originalShield.setRingColor(new Color(0,0,0,0));
         }
+        // Snapshot the armor grid once so the first combat frame already has a baseline to restore from.
+        saveArmor();
     }
     public ShipAPI getShip() { return ship; }
     public ShieldProfile getProfile() { return profile; }
@@ -154,6 +149,16 @@ public class FilmShieldController implements DamageTakenModifier, AdvanceableLis
         if(engine==null||engine.isPaused()) return;
         if(!servicesStarted) { FilmShield.ensureCombatServices(); servicesStarted=true; }
         finishArmorRestore();
+        // Pre-extraction behaviour, deliberately kept: while the native shield is on, its facing is locked to the
+        // stern. The engine floors the intercept cone at 1 degree whatever the configured arc is, and pointing that
+        // cone aft keeps it off the axis every frontal hit travels along, so the native shield can never swallow a
+        // hit before the film gets to see it. The armor grid is frozen for as long as the shield is up.
+        ShieldAPI nativeShield=ship.getShield();
+        boolean shieldOn=nativeShield!=null&&nativeShield.isOn();
+        if(shieldOn) {
+            nativeShield.forceFacing(Misc.normalizeAngle(ship.getFacing()+180f));
+            retainArmor();
+        }
         for(DamageAPI damage:modifiedDamage) damage.getModifier().unmodify(profile.modifierId);
         modifiedDamage.clear();
         for(Iterator<Hit> it=hits.iterator();it.hasNext();) { Hit hit=it.next(); hit.advance(amount); if(hit.shouldExpire()) it.remove(); }
@@ -162,6 +167,7 @@ public class FilmShieldController implements DamageTakenModifier, AdvanceableLis
         else ship.getMutableStats().getEmpDamageTakenMult().unmodify(profile.modifierId);
         if(profile.showStatus&&engine.getPlayerShip()==ship) engine.maintainStatusForPlayerShip(profile.modifierId,
                 "graphics/icons/hullsys/fortress_shield.png",profile.title,isActive()?profile.activeText:profile.inactiveText,!isActive());
+        if(shieldOn) saveArmor();
     }
     protected Hit createHit(Vector2f point,float time,float size) { return new Hit(ship,point,time,size); }
     protected void attachModules() { FilmShield.attachModules(ship,profile); }
@@ -172,11 +178,12 @@ public class FilmShieldController implements DamageTakenModifier, AdvanceableLis
         for(DamageAPI damage:modifiedDamage) damage.getModifier().unmodify(profile.modifierId);
         modifiedDamage.clear(); hits.clear();
         ship.getMutableStats().getEmpDamageTakenMult().unmodify(profile.modifierId);
-        if(originalShield!=null&&ship.getShield()==originalShield) {
-            if(profile.overrideNativeShieldArc) originalShield.setArc(originalArc);
-            originalShield.setRadius(originalRadius);
-            originalShield.setSkipRendering(originalSkip); originalShield.setInnerColor(originalInner); originalShield.setRingColor(originalRing);
-        }
+        // Detach only gives the ship back: damage modifiers, EMP modifier, hits, ownership and the listener.
+        // The native shield settings written by init() are deliberately NOT written back. A ship that carries a
+        // film shield keeps it for its whole life (hullmods cannot be removed from a ship in combat, and the refit
+        // screen rebuilds the ShipAPI on every variant change), so a write-back only ever fires on ships that are
+        // already gone - or, as in the refit preview, on a live-looking ship that was never in play. Writing the
+        // original arc back there made the refit stats panel report the hull arc instead of the attached one.
         if(profile.followParent&&ship.isShipWithModules()) for(ShipAPI module:ship.getChildModulesCopy()) {
             FilmShieldController child=FilmShield.find(module);
             if(child!=null&&child!=this&&child.profile.followParent&&child.profile.id.equals(profile.id)

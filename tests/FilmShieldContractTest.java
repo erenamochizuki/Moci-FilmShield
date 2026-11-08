@@ -9,16 +9,60 @@ import org.lwjgl.util.vector.Vector2f;
 import org.moci.filmshield.api.*;
 import org.moci.filmshield.core.*;
 
-/** Engine-interface contract tests. No Moci, BoxUtil, LunaLib, game window or GL context on the classpath. */
+/**
+ * 贴膜盾前置库的「契约测试」——一个不依赖 JUnit、不启动游戏、不需要 OpenGL 上下文的单文件自检程序。
+ *
+ * <h2>它是什么</h2>
+ * <p>这是给前置库自己写的回归测试：把库需要调用到的每一个游戏接口（{@code ShipAPI}、{@code ShieldAPI}、
+ * {@code FluxTrackerAPI}、{@code MutableShipStatsAPI}、{@code ArmorGridAPI}、{@code MutableStat} 等）
+ * 用 {@link java.lang.reflect.Proxy} 动态代理成「假对象」，再让真实的库代码跑在这些假对象上，
+ * 断言它的返回值与副作用是否符合约定。它测的是**库与游戏接口之间的契约**，
+ * 不是游戏内表现，也不能替代进游戏实测。</p>
+ *
+ * <h2>为什么要有它</h2>
+ * <p>库里有大量「只在游戏中才会暴露」的坑：改变原版护盾的弧度、把伤害修正器挂上又摘下来、
+ * 吸收伤害后还原装甲网格、拆除时不能残留修正器、多 mod 抢同一个贴膜盾时的选择顺序……
+ * 这些都用肉眼看不出来，一改就可能悄悄破坏别的 mod。有了它，改库之后跑一次十几秒就能知道有没有破坏约定。</p>
+ *
+ * <h2>怎么跑</h2>
+ * <p>由 {@code build.ps1} 在打包前自动执行：先用 JDK 17 的 {@code javac} 把本文件编译到
+ * {@code target/contract-tests}，再用 {@code java} 运行 {@code FilmShieldContractTest}，
+ * 退出码非 0 就中断构建。也可以手动跑（classpath 需要 {@code target/classes} +
+ * {@code starfarer.api.jar}、{@code lwjgl.jar}、{@code lwjgl_util.jar}、{@code LazyLib.jar}、
+ * {@code log4j-1.2.9.jar}、{@code json.jar}、{@code Graphics.jar}）。</p>
+ *
+ * <h2>结构</h2>
+ * <ul>
+ *   <li>基础设施：{@link #check}、{@link #near}、{@link #zero}、{@link #proxy}、{@link #reject}、
+ *       假舰船 {@link Hull}、假命中 {@link Hit}。</li>
+ *   <li>子测试：{@link #nativeArcTests}（原版盾角改写）、{@link #shieldlessNativeTests}（无盾船警告）、
+ *       {@link #priorityTests}（多 mod 选择顺序）、{@link #disableTests}（兼容开关）、
+ *       {@link #dataTests}（CSV/贴图数据自洽）。</li>
+ *   <li>{@link #main}：先跑上面五个子测试，再在假舰船上跑伤害吸收、通量、装甲还原、EMP 保护、
+ *       模块继承、暂停/服务注册、离场清理等主流程断言。</li>
+ * </ul>
+ * <p>任何一条断言失败都会抛 {@link AssertionError} 并打印中文/英文混合的断言消息，
+ * 消息里带上实际数值，方便直接定位。全部通过时会打印
+ * {@code FilmShield contract checks passed: <数量>}，当前共 246 项。</p>
+ */
 public final class FilmShieldContractTest {
+    /** 已执行的断言计数，最后打印出来证明测试确实跑过而不是静默跳过。 */
     static int checks;
+    /** 最基础的断言：条件为 false 立即抛 AssertionError，中断整个测试。 */
     static void check(boolean ok,String message) { checks++; if(!ok) throw new AssertionError(message); }
+    /** 浮点比较：容差 0.001，用于断言通量、弧度、倍率这类数值。 */
     static void near(float expected,float actual,String message) { check(Math.abs(expected-actual)<0.001f,message+": "+actual); }
+    /** 代理对象未命中任何 case 时的兜底返回值：基本类型给零值，引用类型给 null。 */
     static Object zero(Class<?> type) {
         if(type==boolean.class) return false; if(type==float.class) return 0f; if(type==int.class) return 0;
         if(type==double.class) return 0d; if(type==long.class) return 0L; return null;
     }
     interface Call { Object call(Method m,Object[] a); }
+    /**
+     * 把任意游戏接口做成假对象：所有方法调用都转给 {@code call} 处理。
+     * {@code equals}/{@code hashCode}/{@code toString} 按对象语义处理，避免代理在集合里行为异常。
+     * 这是整个测试能脱离游戏运行的关键——库代码以为自己拿到的是真的 ShipAPI。
+     */
     @SuppressWarnings("unchecked") static <T> T proxy(Class<T> type,Call call) {
         return (T)Proxy.newProxyInstance(type.getClassLoader(),new Class[]{type},(p,m,a)->{
             if(m.getName().equals("hashCode")) return System.identityHashCode(p);
@@ -27,6 +71,14 @@ public final class FilmShieldContractTest {
             return call.call(m,a==null?new Object[0]:a);
         });
     }
+    /**
+     * 假舰船：一次性把一艘船在贴膜盾眼里需要的全部接口都代理出来，并暴露成可直接断言的字段。
+     * 关键字段：{@code arc/radius/skip/inner/ring}（原版护盾状态，可断言库有没有乱改）、
+     * {@code arcWrites}（原版弧被写了多少次）、{@code flux/lastHard}（通量与软硬属性）、
+     * {@code armor}（装甲网格，可断言吸收伤害后是否被还原）、{@code listeners}（监听器登记）、
+     * {@code custom}（custom data，存放控制器）、{@code alive/hulk/removed/phased/overloaded}（状态开关）。
+     * 构造参数 {@code nativeShield} 决定这艘船有没有原版护盾（false 用于测 EXTERNAL 模式与无盾警告）。
+     */
     static class Hull {
         boolean alive=true,hulk,removed,phased,overloaded,shieldOn=true,skip;
         boolean lastHard; float flux,arc=120,radius=90;
@@ -105,6 +157,7 @@ public final class FilmShieldContractTest {
             });
         }
     }
+    /** 假命中：模拟一次伤害结算所需的 {@code DamageAPI}，包括修正器、伤害量、DPS/软通量/破片等标记。 */
     static class Hit {
         final MutableStat modifier=new MutableStat(1f);
         float amount=100,duration=.1f; boolean dps,soft,force; DamageType type=DamageType.ENERGY;
@@ -118,8 +171,17 @@ public final class FilmShieldContractTest {
             } return zero(m.getReturnType());
         });
     }
+    /** 生成一个 EXTERNAL（外部开关）模式的 profile，用于没有原版护盾的船。 */
     static ShieldProfile external(String id) { return ShieldProfile.builder(id).control(ShieldProfile.Control.EXTERNAL).build(); }
+    /** 断言某个操作必须被参数校验拒绝（抛 IllegalArgumentException/IllegalStateException）。 */
     static void reject(Runnable action,String label) { boolean failed=false;try{action.run();}catch(IllegalArgumentException|IllegalStateException e){failed=true;}check(failed,label); }
+    /**
+     * 原版盾角改写（1.2.0 起的接口）：
+     * 非法弧度必须被拒绝；默认 profile 仍是「把弧改成 0」；
+     * nativeShieldArc / preserveNativeShieldArc 后写者生效；
+     * preserve 模式不写弧、不碰半径与渲染；attach 之后别的 mod 改了弧，本库不得覆盖；
+     * 拆下之后不再回写（1.3.2 起的行为）。
+     */
     static void nativeArcTests() {
         for(float invalid:new float[]{-1f,360.1f,Float.NaN,Float.POSITIVE_INFINITY,Float.NEGATIVE_INFINITY,Float.MAX_VALUE})
             reject(()->ShieldProfile.builder("invalid_arc").nativeShieldArc(invalid),"reject invalid native arc: "+invalid);
@@ -148,16 +210,16 @@ public final class FilmShieldContractTest {
             FilmShield.detach(preserved.ship);
             near(75,preserved.arc,"preserve detach retains third-party arc");
             check(preserved.arcWrites==1,"preserve detach never writes arc");
-            near(90,preserved.radius,"preserve mode still restores radius");
-            check(!preserved.skip&&preserved.inner.equals(Color.BLUE),"preserve mode still restores rendering");
+            near(80,preserved.radius,"detach leaves the native radius untouched");
+            check(preserved.skip&&preserved.inner.getAlpha()==0,"detach leaves the native rendering untouched");
             for(float degrees:new float[]{0f,0.1f,90f,360f}) {
                 Hull custom=new Hull(true);
                 ShieldProfile p=ShieldProfile.builder("arc_custom").control(control).nativeShieldArc(degrees).build();
                 FilmShieldController customController=FilmShield.attach(custom.ship,p);
                 near(degrees,custom.arc,"custom native arc applied: "+control);
                 check(FilmShield.attach(custom.ship,p)==customController&&custom.arcWrites==1,"repeated attach does not reapply arc");
-                FilmShield.detach(custom.ship);near(120,custom.arc,"custom native arc restores original on detach");
-                check(custom.arcWrites==2,"custom arc written once on attach and once on detach");
+                FilmShield.detach(custom.ship);near(degrees,custom.arc,"detach leaves the applied arc in place");
+                check(custom.arcWrites==1,"arc written once on attach and never on detach");
             }
         }
         Hull parent=new Hull(true),module=new Hull(true);
@@ -166,7 +228,7 @@ public final class FilmShieldContractTest {
         FilmShield.attach(parent.ship,inherited);FilmShield.attachModules(parent.ship,inherited);
         near(30,parent.arc,"parent custom arc");near(30,module.arc,"inherited module custom arc");
         FilmShield.detach(parent.ship);
-        near(120,parent.arc,"parent restores its original arc");near(45,module.arc,"module restores its own original arc");
+        near(30,parent.arc,"parent keeps the applied arc after detach");near(30,module.arc,"module keeps its inherited arc after detach");
         ShieldProfile keep=ShieldProfile.builder("preserve_modules").preserveNativeShieldArc().build();
         FilmShield.attach(parent.ship,keep);FilmShield.attachModules(parent.ship,keep);
         module.arc=55f;FilmShield.detach(parent.ship);
@@ -177,6 +239,10 @@ public final class FilmShieldContractTest {
         external.setEnabled(true);check(external.isActive(),"arc override is harmless without ShieldAPI");FilmShield.detach(shieldless.ship);
     }
     /** 1.3.0: a native-shield profile on a ship whose ShieldAPI is missing (e.g. removed by another hullmod) must not crash ship creation. */
+    /**
+     * 原版模式遇到「没有原版护盾」的船：不得抛异常，必须记一条 [FILMSHIELD] WARN，
+     * 并返回一个不起作用的控制器（不注册监听器、不占据所有权、开启也无效）。
+     */
     static void shieldlessNativeTests() {
         List<String> warnings=new ArrayList<>();
         org.apache.log4j.AppenderSkeleton capture=new org.apache.log4j.AppenderSkeleton() {
@@ -216,6 +282,12 @@ public final class FilmShieldContractTest {
             root.removeAppender(capture);
         }
     }
+    /**
+     * 多个 mod 同时想给同一艘船贴膜盾时的仲裁：与船插列表顺序无关、与调用顺序无关，
+     * 只让列表里第一个可用的 provider 生效；落选方必须零副作用；
+     * 被 suppressed 的 provider 直接跳过；旧式 attach 遵守 profile 绑定的 ship hullmod id；
+     * 直接 new 一个落选控制器不得抢占视觉所有权、也不得擦掉获胜者的伤害修正器。
+     */
     static void priorityTests() {
         Map<String,HullModEffect> effects=new HashMap<>();
         for(String id:Arrays.asList("moci","vector","red")) effects.put(id,new FilmShieldHullmod());
@@ -241,7 +313,7 @@ public final class FilmShieldContractTest {
             winner.modifyDamageTaken(null,h.ship,new Hit().api,null,false);
             near(80,h.flux,"only winner's efficiency applies");
             h.shieldOn=false;check(!winner.isActive(),"inactive winner never enables a runner-up");
-            FilmShield.detach(h.ship);near(120,h.arc,"selection preserves native shield restoration");
+            FilmShield.detach(h.ship);near(0,h.arc,"detach leaves the applied native arc in place");
         }
         Hull callbacks=new Hull(true);callbacks.hullmods.addAll(Arrays.asList("vector","red","moci"));
         effects.get("moci").applyEffectsAfterShipCreation(callbacks.ship,"moci");
@@ -283,6 +355,10 @@ public final class FilmShieldContractTest {
         FilmShield.detach(parent.ship);check(FilmShield.find(local.ship)==own,"parent cleanup preserves module's independent provider");
         Global.setSettings(null);
     }
+    /**
+     * 兼容开关 filmshield_disable（1.3.0 起的接口）：
+     * 装了该船插的船必须整体不生效，但库本身不得因为开关而抛异常或残留监听器。
+     */
     static void disableTests() {
         Map<String,HullModEffect> effects=new HashMap<>();
         effects.put("moci",new FilmShieldHullmod());effects.put("red",new FilmShieldHullmod());
@@ -370,7 +446,11 @@ public final class FilmShieldContractTest {
         }
         out.add(cell.toString());return out;
     }
-    /** hull_mods.csv must name loadable effect classes and existing sprites; a typo here only fails in game. */
+    /**
+     * 数据自洽检查：hull_mods.csv 里列出的脚本类必须真的能被加载（且实现了 HullModEffect），
+     * 贴图文件必须真的存在，列数与表头一致；兼容开关那行必须是隐藏、未解锁、不可作为内置船插。
+     * 这些错在游戏里只会表现为「进游戏炸了」，所以提前在构建阶段挡住。
+     */
     static void dataTests() throws Exception {
         java.nio.file.Path root=java.nio.file.Paths.get(FilmShieldContractTest.class.getProtectionDomain().getCodeSource().getLocation().toURI()).getParent().getParent();
         List<String> lines=java.nio.file.Files.readAllLines(root.resolve("data/hullmods/hull_mods.csv"),java.nio.charset.StandardCharsets.UTF_8);
@@ -390,12 +470,19 @@ public final class FilmShieldContractTest {
                 &&"false".equalsIgnoreCase(toggle.get(header.indexOf("unlocked"))),"disable switch is hidden everywhere and locked");
         check(toggle.get(header.indexOf("tags")).contains("no_build_in"),"disable switch cannot be built in as an s-mod");
     }
+    /**
+     * 测试入口：先清空全局战斗引擎（保证库代码走「非战斗」分支），
+     * 再依次跑五个子测试与主流程断言。
+     */
     public static void main(String[] args) throws Exception {
         Global.setCombatEngine(null);
+        // —— 子测试一~二：原版盾角改写、无盾船警告 ——
         nativeArcTests();
         shieldlessNativeTests();
+        // —— 参数校验：NaN 与负数倍率必须被拒绝 ——
         reject(()->ShieldProfile.builder("bad").fluxPerDamage(Float.NaN).build(),"reject NaN");
         reject(()->ShieldProfile.builder("bad").fragmentationMultiplier(-1).build(),"reject negative multiplier");
+        // —— EXTERNAL 模式：默认关闭、attach 幂等、不同 profile 不能叠加、视觉所有权唯一 ——
         Hull h=new Hull(false); ShieldProfile profile=external("test");
         FilmShieldController c=FilmShield.attach(h.ship,profile);
         check(!c.isActive(),"external starts disabled");
@@ -403,6 +490,7 @@ public final class FilmShieldContractTest {
         reject(()->FilmShield.attach(h.ship,external("other")),"different profile cannot double stack");
         reject(()->FilmShield.registerVisual(h.ship,()->true),"visual ownership cannot be silently replaced");
         c.setEnabled(true); check(c.isActive(),"external shieldless activation");
+        // —— 伤害吸收：命中判定、软/硬通量换算、装甲只还原被保存的那一份 ——
         BeamAPI beam=proxy(BeamAPI.class,(m,a)->zero(m.getReturnType()));
         Hit melee=new Hit(); c.modifyDamageTaken(beam,h.ship,melee.api,null,false);
         near(100,h.flux,"instantaneous beam-origin melee is not multiplied by duration");check(h.lastHard,"melee hard flux");
@@ -419,31 +507,39 @@ public final class FilmShieldContractTest {
         c.setEnabled(false);Hit bypass=new Hit();check(c.modifyDamageTaken(null,h.ship,bypass.api,null,false)==null,"disabled bypass");h.armor[0][0]=75;
         FilmShield.detach(h.ship);near(75,h.armor[0][0],"bypass armor damage not healed at detach");
         check(h.custom.isEmpty()&&h.listeners.isEmpty(),"detach removes ownership/listener");near(1,melee.modifier.getModifiedValue(),"detach cleans shared damage modifier");
+        // —— NATIVE 模式：隐藏原版碰撞盾、保留原版通量效率、拆下不写回原版护盾参数 ——
         Hull nativeHull=new Hull(true);FilmShieldController nativeController=FilmShield.attach(nativeHull.ship,ShieldProfile.builder("native").build());
         near(0,nativeHull.arc,"native collision shield hidden");check(nativeHull.skip,"native render hidden");
         nativeController.modifyDamageTaken(null,nativeHull.ship,new Hit().api,null,false);near(80,nativeHull.flux,"native hull efficiency retained");
         nativeHull.shieldOn=false;check(!nativeController.isActive(),"native toggle respected");FilmShield.detach(nativeHull.ship);
-        near(120,nativeHull.arc,"original arc restored");near(90,nativeHull.radius,"original radius restored");check(nativeHull.inner.equals(Color.BLUE)&&!nativeHull.skip,"original colors/render flag restored");
+        near(0,nativeHull.arc,"detach does not write the native arc back");near(80,nativeHull.radius,"detach does not write the native radius back");
+        check(nativeHull.skip&&nativeHull.inner.getAlpha()==0,"detach does not write rendering/colors back");
+        // —— 模块跟随：子模块继承母舰的开关，但通量记在母舰头上；母舰拆下时子模块一起清理 ——
         Hull parent=new Hull(false),module=new Hull(false);module.parent=parent.ship;parent.modules.add(module.ship);
         FilmShieldController pc=FilmShield.attach(parent.ship,profile);pc.setEnabled(true);FilmShield.attachModules(parent.ship,profile);
         FilmShieldController mc=FilmShield.find(module.ship);check(mc!=null&&mc.isActive(),"module inherits activation");
         mc.modifyDamageTaken(null,module.ship,new Hit().api,null,false);near(100,parent.flux,"module charges parent");near(0,module.flux,"module does not charge self");
         pc.setEnabled(false);check(!mc.isActive(),"parent off disables module");
         FilmShield.detach(parent.ship);check(FilmShield.find(module.ship)==null,"parent detach cleans inherited modules");
+        // —— 接入钩子：shouldAbsorb 返回 false 时必须完全绕过吸收 ——
         Hull filtered=new Hull(false);
         ShieldProfile filterProfile=ShieldProfile.builder("filter").control(ShieldProfile.Control.EXTERNAL)
             .hooks(new ShieldHooks() { public boolean shouldAbsorb(ShipAPI ship,Object source,DamageAPI damage,Vector2f point) { return source!=null; } }).build();
         FilmShieldController fc=FilmShield.attach(filtered.ship,filterProfile);fc.setEnabled(true);
         check(fc.modifyDamageTaken(null,filtered.ship,new Hit().api,null,false)==null,"integration hook can bypass interception");
+        // —— 通量成本：fluxPerDamage(0) 的盾照样吸收，且不产生通量 ——
         Hull free=new Hull(false);FilmShieldController freeShield=FilmShield.attach(free.ship,ShieldProfile.builder("free").control(ShieldProfile.Control.EXTERNAL).fluxPerDamage(0).build());freeShield.setEnabled(true);
         check(freeShield.modifyDamageTaken(null,free.ship,new Hit().api,null,false)!=null,"zero-cost shields still absorb");near(0,free.flux,"zero-cost shield generates no flux");
+        // —— 破片伤害：通用倍率只乘一次；Moci 额外倍率与通用倍率叠加 ——
         Hull frag=new Hull(false);FilmShieldController fragShield=FilmShield.attach(frag.ship,external("frag"));fragShield.setEnabled(true);
         Hit fragHit=new Hit();fragHit.type=DamageType.FRAGMENTATION;fragShield.modifyDamageTaken(null,frag.ship,fragHit.api,null,false);near(25,frag.flux,"generic fragmentation uses type multiplier once");
         Hull legacyFrag=new Hull(false);FilmShieldController legacyShield=FilmShield.attach(legacyFrag.ship,ShieldProfile.builder("legacy").control(ShieldProfile.Control.EXTERNAL).fragmentationMultiplier(.25f).build());legacyShield.setEnabled(true);
         legacyShield.modifyDamageTaken(null,legacyFrag.ship,fragHit.api,null,false);near(6.25f,legacyFrag.flux,"Moci extra fragmentation multiplier retained");
+        // —— 子测试三~五：多 mod 仲裁、兼容开关、数据自洽 ——
         priorityTests();
         disableTests();
         dataTests();
+        // —— 每帧推进：暂停时不注册服务、不重复注册；离场后清理监听器与 EMP 修正 ——
         Map<String,Object> combatData=new HashMap<>();boolean[] paused={true};
         Global.setCombatEngine(proxy(CombatEngineAPI.class,(m,a)->{
             if(m.getName().equals("isPaused")) return paused[0];

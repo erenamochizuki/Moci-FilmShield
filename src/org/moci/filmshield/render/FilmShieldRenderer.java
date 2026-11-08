@@ -173,6 +173,12 @@ public class FilmShieldRenderer extends BaseCombatLayeredRenderingPlugin {
                     }
                 }
                 normalUniformsAvailable = uniform[6] != -1 && uniform[7] != -1 && uniform[8] != -1;
+                // 颜色 uniform 只降级、不否决：取不到时颜色会留在 (0,0,0) 变成黑盾，但整条着色器路径
+                // 仍可用。与其让全部效果退回固定管线，不如留下一条可查的日志。
+                if (uniform[9] == -1 || uniform[10] == -1) {
+                    LOG.warn("[GN_SHIELD] color uniforms unavailable (lowColor=" + uniform[9]
+                            + ", highColor=" + uniform[10] + "); the film renders black, check the shader build");
+                }
 
                 if (baseUniformsValid) {
                     // 纹理单元设置将在首次绑定时进行（延迟初始化优化）
