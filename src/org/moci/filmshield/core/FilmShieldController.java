@@ -144,7 +144,8 @@ public class FilmShieldController implements DamageTakenModifier, AdvanceableLis
     }
     @Override public void advance(float amount) {
         if(disposed) return;
-        if(!ship.isAlive()||ship.isHulk()||ship.wasRemoved()) { dispose(); return; }
+        // 暂停自动离场清理：部署预推进时，新舰也可能带有 wasRemoved 标记。
+        // if(!ship.isAlive()||ship.isHulk()||ship.wasRemoved()) { dispose(); return; }
         CombatEngineAPI engine=Global.getCombatEngine();
         if(engine==null||engine.isPaused()) return;
         if(!servicesStarted) { FilmShield.ensureCombatServices(); servicesStarted=true; }

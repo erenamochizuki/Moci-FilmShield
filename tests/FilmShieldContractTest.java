@@ -43,7 +43,7 @@ import org.moci.filmshield.core.*;
  * </ul>
  * <p>任何一条断言失败都会抛 {@link AssertionError} 并打印中文/英文混合的断言消息，
  * 消息里带上实际数值，方便直接定位。全部通过时会打印
- * {@code FilmShield contract checks passed: <数量>}，当前共 246 项。</p>
+ * {@code FilmShield contract checks passed: <数量>}。</p>
  */
 public final class FilmShieldContractTest {
     /** 已执行的断言计数，最后打印出来证明测试确实跑过而不是静默跳过。 */
@@ -539,7 +539,7 @@ public final class FilmShieldContractTest {
         priorityTests();
         disableTests();
         dataTests();
-        // —— 每帧推进：暂停时不注册服务、不重复注册；离场后清理监听器与 EMP 修正 ——
+        // —— 每帧推进：暂停时不注册服务、不重复注册；部署标记不自动注销，显式拆下仍清理 ——
         Map<String,Object> combatData=new HashMap<>();boolean[] paused={true};
         Global.setCombatEngine(proxy(CombatEngineAPI.class,(m,a)->{
             if(m.getName().equals("isPaused")) return paused[0];
@@ -550,7 +550,20 @@ public final class FilmShieldContractTest {
         lc.advance(.1f);check(combatData.isEmpty(),"paused advance allocates no services");paused[0]=false;
         lc.advance(.1f);check(combatData.size()==2,"services register without a GL context");lc.advance(.1f);check(combatData.size()==2,"services do not duplicate");
         near(0,life.mutable.getEmpDamageTakenMult().getModifiedValue(),"active EMP protection");
-        life.removed=true;lc.advance(.1f);check(FilmShield.find(life.ship)==null,"removed entity cleaned");near(1,life.mutable.getEmpDamageTakenMult().getModifiedValue(),"EMP modifier cleaned");
+        life.removed=true;life.alive=false;lc.advance(.1f);
+        check(FilmShield.find(life.ship)==lc,"undeployed entity retains controller");
+        check(FilmShield.visual(life.ship)==lc&&life.listeners.contains(lc),"undeployed entity retains visual and listener");
+        check(!lc.isActive(),"nonliving entity cannot activate shield");
+        near(1,life.mutable.getEmpDamageTakenMult().getModifiedValue(),"inactive EMP modifier cleared without disposal");
+        life.alive=true;lc.advance(.2f);
+        check(FilmShield.find(life.ship)==lc&&lc.isActive(),"pending deployment warm-up retains shield");
+        life.removed=false;lc.advance(.1f);
+        check(FilmShield.find(life.ship)==lc&&FilmShield.visual(life.ship)==lc&&life.listeners.contains(lc),"deployment keeps controller visual and listener");
+        life.hulk=true;lc.advance(.1f);
+        check(FilmShield.find(life.ship)==lc&&!lc.isActive(),"hulk remains registered but cannot activate shield");
+        FilmShield.detach(life.ship);
+        check(FilmShield.find(life.ship)==null&&FilmShield.visual(life.ship)==null&&!life.listeners.contains(lc),"explicit detach still cleans registration");
+        near(1,life.mutable.getEmpDamageTakenMult().getModifiedValue(),"explicit detach cleans EMP modifier");
         Global.setCombatEngine(null);
         System.out.println("FilmShield contract checks passed: "+checks);
     }

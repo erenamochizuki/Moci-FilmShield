@@ -1,5 +1,17 @@
 # 验证记录
 
+## 1.3.3：暂停自动离场注销，避免部署误清理（2026-11-11）
+
+现场日志：六艘大和遗迹悬舟守卫在创建回调中均成功挂上 GN 贴膜盾，首次部署检查约 0.53 秒时却全部出现 `controller=null`、`visual=null`、`listener=false`，原生盾仍保持 0.01° 和隐藏绘制。日志中没有直接记录 dispose 调用栈。
+
+本地引擎代码表明：新实体的 `wasRemoved` 初始为 true，加入待部署队列后会先调用 `Ship.advance` 预推进，真正处理加入队列时才清除标记。当前 JAR 的接口替身探针复现了这一路径：`alive=true, wasRemoved=true` 时推进一次即注销控制器、视觉与监听器，正式入场后不会恢复。这与现场状态一致；并不据此认定最初玩家使用的版本。
+
+按用户要求，注释 `FilmShieldController.advance` 中的自动 dispose 判断。`isActive()` 仍拒绝死亡和残骸等非生效状态，显式 detach/dispose 仍可清理。API 主版本保持 1。
+
+JDK 17 独立构建与 253 项接口替身合约检查通过，新增覆盖未入场/待部署标记保留控制器与 UI、正式入场后登记不丢失、死亡/残骸不可激活、显式拆下清理。替身检查不代替游戏内复测；待验收大和遗迹六艘敌方悬舟的开盾、UI、伤害吸收与回收后玩家侧表现。
+
+发布包：`releases/Moci的贴膜盾前置-1.3.3.zip`。游戏同步以本次部署收据为准。
+
 ## 1.3.2：拆下不再回写原版护盾（2026-11-08）
 
 现场问题：装配界面右侧舰船属性面板的「护盾角度」显示 360，而不是贴膜盾实际使用的弧度（1.3.1 之前配置成 0 时显示 0）。逐级取证（`[GN_ARC]` 诊断日志）确认：装配界面预览舰创建时 hullmod 副作用正常执行，贴膜盾把弧度写成 0.01；随后 `updateFromCurrentVariant()` 对预览舰调用一次 `advance(1.0E-4F)`，`FilmShieldController.advance` 的守卫 `if(!ship.isAlive()||ship.isHulk()||ship.wasRemoved()) dispose()` 命中（预览舰出生即 `alive=false`、`removed=true`，从未真正入场），`dispose()` 把原版护盾弧度写回 `originalArc`（船体的 360）。面板 `Math.round(arc)` 因此显示 360。

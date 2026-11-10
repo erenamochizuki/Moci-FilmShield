@@ -2,7 +2,7 @@
 
 源码仓库：[erenamochizuki/Moci-FilmShield](https://github.com/erenamochizuki/Moci-FilmShield)。
 
-独立 mod ID：`moci_filmshield`；版本：1.3.2；API 主版本：1。目标环境为 **Starsector 0.98 / Java 17**。
+独立 mod ID：`moci_filmshield`；版本：1.3.3；API 主版本：1。目标环境为 **Starsector 0.98 / Java 17**。
 
 玩家与接入者请先阅读本目录的 [接入与兼容说明.md](接入与兼容说明.md)，该文件也随游戏用发布包提供，包含多个贴膜盾同时安装时的优先规则。
 
@@ -24,7 +24,7 @@
 
 修改公共源码后，先构建本前置，再构建 Moci。主工程为接口编译加入公共源码路径，但明确从 MociShipPack.jar 排除 `org/moci/filmshield/**`；实际运行始终使用独立前置 JAR，不能把公共类再打进其他 mod。主工程编译通过不代表已更新前置 JAR。
 
-运行 `./package.ps1` 构建并生成 `releases/Moci的贴膜盾前置-1.3.2.zip`；已完成构建时可加 `-SkipBuild`。游戏用发布包包含 mod_info.json、jars、data、graphics，以及 README、接入与兼容说明、验证记录和接入示例。src、tests 随源码仓库提供。
+运行 `./package.ps1` 构建并生成 `releases/Moci的贴膜盾前置-1.3.3.zip`；已完成构建时可加 `-SkipBuild`。游戏用发布包包含 mod_info.json、jars、data、graphics，以及 README、接入与兼容说明、验证记录和接入示例。src、tests 随源码仓库提供。
 
 ## 接入方式
 
@@ -34,7 +34,7 @@
 {"id":"moci_filmshield","name":"Moci的贴膜盾前置","version":"1.3.0"}
 ```
 
-依赖版本填自己用到的接口的最低版本：船插优先选择为 1.1.0，原版盾角配置为 1.2.0，关闭开关接口为 1.3.0。1.3.1 只有渲染修复，1.3.2 只修拆下时的行为，两者都没有接口变化。
+依赖版本填自己用到的接口的最低版本：船插优先选择为 1.1.0，原版盾角配置为 1.2.0，关闭开关接口为 1.3.0。1.3.1～1.3.3 为行为修复，没有接口变化。
 
 1. **只写舰船数据**：将 `filmshield_surface` 加入 builtInMods。该通用船插隐藏于普通安装列表，不自动加入任何商店或船只；跟随原版护盾开关，要求有原版护盾。
 2. **完整伤害机制**：继承 `FilmShieldHullmod`，或让自己的船插实现 `FilmShieldProvider` 并调用 `FilmShield.attach(ship, profile, hullmodId)`。也可用 `profile.hullmodId(...)` 绑定旧 attach 入口。未选中的船插返回 null，调用方必须判断；不要对它启动额外监听器或 UI。原版模式跟随原版护盾，船上没有原版护盾时只记录警告并跳过；`EXTERNAL` 模式适合没有原版护盾的船，由系统或 AI 调用 `setEnabled`，默认关闭。两种模式都在过载、排幅、相位和死亡时停用。
@@ -50,7 +50,7 @@
 - `ShieldHooks`：命中是否接管、最终幅能调整、吸收后的通知；允许其他 mod 接入过滤和附加效果。回调在战斗线程执行，不得抛异常、操作 GL 或递归触发 attach。
 - `ShieldVisual` / `ShieldHit`：独立于伤害实现的展示协议。以后增加默认方法保持源码接入兼容；不能重解释现有方法语义，破坏性变更提升 API 主版本。
 - `FilmShield.registerNormalTextureDataCSV(path)`：按 GraphicsLib texture CSV 格式注册法线备用表，仅取 map=normal；素材 ID 和路径由内容 mod 自己命名。
-- `FilmShield.detach(ship)`：清理伤害/EMP修正、监听器和登记，恢复原版护盾半径/颜色/绘制开关；仅在配置覆盖盾角时恢复原盾角，并清理同 profile 的继承模块。外部纯视觉实现使用 unregisterVisual 并传回原适配器实例。
+- `FilmShield.detach(ship)`：清理伤害/EMP修正、监听器、登记和同 profile 的继承模块；1.3.2 起不再恢复原版护盾参数。1.3.3 起不按存活/残骸/移除标记自动调用，显式拆下仍可用。外部纯视觉实现使用 unregisterVisual 并传回原适配器实例。
 - 原版模式的实际幅能 = 伤害类型/舰体及攻击方修正 × 舰体护盾效率 × profile.fluxPerDamage × 护盾属性修正。外控模式直接使用 profile.fluxPerDamage，不读取舰体护盾效率。
 - 延续贴膜盾原来的非零残余伤害处理（倍率 0.0001）和已吸收命中的装甲恢复；它不是引擎原生护盾碰撞面，不承诺触发其他 mod 的 shieldHit=true 特殊逻辑。若第三方自有护盾有特殊结算，优先选视觉接口。
 - 护盾溢出、特殊 EMP/碰撞和其他伤害监听器的先后顺序仍需游戏内联调；编译与替身测试不证明所有 mod 组合兼容。
@@ -81,6 +81,12 @@
 - 旧入口：没有船插 ID 的旧式 `attach` 在关闭的船上返回一个不起作用的控制器（不返回 null，避免旧调用方空指针）；`registerVisual(ship, visual)` 与 `claim` 直接忽略，不报冲突。完全绕过前置、自己修改原版护盾的第三方代码不受开关约束，需要自行检查 `FilmShield.isDisabled(ship)`。
 
 其他 mod 的接入写法见 [接入与兼容说明.md](接入与兼容说明.md)。
+
+## 1.3.3 修复
+
+- 注释 `advance` 中按 `!isAlive()`、`isHulk()` 或 `wasRemoved()` 自动注销控制器的判断，避免新舰在部署预推进阶段被误清理，导致敌方贴膜盾与状态 UI 消失。
+- 死亡、残骸、相位、过载和排幅时的护盾生效限制仍由 `isActive()` 保留；显式 `dispose`／`FilmShield.detach` 仍执行清理。
+- API 主版本仍为 1，接入方无需更改接口。构建和 253 项接口替身检查通过；大和遗迹悬舟守卫仍需游戏内复测。
 
 ## 1.3.2 修复
 
