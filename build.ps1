@@ -10,10 +10,12 @@ $classpath=$classpath -join ';'
 if(-not $SkipContractTests) {
     $testOut=Join-Path $PSScriptRoot 'target/contract-tests'
     New-Item -ItemType Directory -Force -Path $testOut | Out-Null
-    & (Join-Path $JavaHome 'bin/javac.exe') -encoding UTF-8 -cp $classpath -d $testOut (Join-Path $PSScriptRoot 'tests/FilmShieldContractTest.java')
+    & (Join-Path $JavaHome 'bin/javac.exe') -encoding UTF-8 -cp $classpath -d $testOut (Join-Path $PSScriptRoot 'tests/FilmShieldContractTest.java') (Join-Path $PSScriptRoot 'tests/FilmShieldRenderDiagnosticsTest.java')
     if($LASTEXITCODE -ne 0) { throw 'Contract test compilation failed' }
     & (Join-Path $JavaHome 'bin/java.exe') -cp ($testOut+';'+$classpath) FilmShieldContractTest
     if($LASTEXITCODE -ne 0) { throw 'Contract tests failed' }
+    & (Join-Path $JavaHome 'bin/java.exe') -cp ($testOut+';'+$classpath) FilmShieldRenderDiagnosticsTest
+    if($LASTEXITCODE -ne 0) { throw 'Render diagnostic tests failed' }
 }
 $jarDir=Join-Path $PSScriptRoot 'jars'
 New-Item -ItemType Directory -Force -Path $jarDir | Out-Null

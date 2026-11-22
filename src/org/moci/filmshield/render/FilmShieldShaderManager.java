@@ -20,6 +20,8 @@ public class FilmShieldShaderManager {
     private boolean openGL20Supported = false;
     private static final Logger LOG = Global.getLogger(FilmShieldShaderManager.class);
     private static FilmShieldShaderManager shared;
+    private final java.util.Set<String> reportedSources = new java.util.HashSet<>();
+    private final java.util.Set<Integer> reportedReuse = new java.util.HashSet<>();
 
     /**
      * 进程内共享实例（与抽离前 Moci 的单例一致）。只在渲染线程调用。
@@ -59,22 +61,30 @@ public class FilmShieldShaderManager {
         
         if (shaders.containsKey(shaderKey)) {
             if (isShaderValid(shaderKey)) {
+                if (reportedReuse.add(shaders.get(shaderKey)))
+                    LOG.info("[FILMSHIELD_SHADER] reuse key=" + shaderKey + ", program=" + shaders.get(shaderKey));
                 return shaders.get(shaderKey);
             }
             // 缓存的程序句柄已失效时丢弃并重新编译，避免共享缓存把渲染器永久锁在降级模式
             shaders.remove(shaderKey);
+            LOG.warn("[FILMSHIELD_SHADER] cached program invalid key=" + shaderKey + "; recompiling");
         }
         
         try {
             // 读取着色器源码
             String vertSource = Global.getSettings().loadText(vertPath);
             String fragSource = Global.getSettings().loadText(fragPath);
+            String vertHash = sourceHash(vertSource), fragHash = sourceHash(fragSource);
+            if (reportedSources.add(shaderKey + vertHash + fragHash))
+                LOG.info("[FILMSHIELD_SHADER] source key=" + shaderKey + ", vert=" + vertPath
+                        + ", frag=" + fragPath + ", vertSha256=" + vertHash + ", fragSha256=" + fragHash);
             
             // 创建着色器程序
             int programID = createShaderProgram(vertSource, fragSource);
             
             if (programID != 0) {
                 shaders.put(shaderKey, programID);
+                LOG.info("[FILMSHIELD_SHADER] linked key=" + shaderKey + ", program=" + programID);
                 return programID;
             } else {
                 LOG.warn("[FILMSHIELD_SHADER] Program link failed key=" + shaderKey);
@@ -95,6 +105,13 @@ public class FilmShieldShaderManager {
     public int getShader(String shaderKey) {
         Integer shader = shaders.get(shaderKey);
         return shader != null ? shader : 0;
+    }
+    private static String sourceHash(String source) throws java.security.NoSuchAlgorithmException {
+        byte[] hash = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(source.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        StringBuilder result = new StringBuilder();
+        for (byte b : hash) result.append(String.format("%02x", b & 255));
+        return result.toString();
     }
     
     /**

@@ -2,7 +2,7 @@
 
 源码仓库：[erenamochizuki/Moci-FilmShield](https://github.com/erenamochizuki/Moci-FilmShield)。
 
-独立 mod ID：`moci_filmshield`；版本：1.3.3；API 主版本：1。目标环境为 **Starsector 0.98 / Java 17**。
+独立 mod ID：`moci_filmshield`；版本：1.4.0；API 主版本：1。目标环境为 **Starsector 0.98 / Java 17**。
 
 玩家与接入者请先阅读本目录的 [接入与兼容说明.md](接入与兼容说明.md)，该文件也随游戏用发布包提供，包含多个贴膜盾同时安装时的优先规则。
 
@@ -22,9 +22,11 @@
 
 只使用 Maven 时，可运行 `mvn "-Dstarsector.lib=D:/StarsectorDev/lib" clean package`；这不执行合约测试，也不复制 JAR 到 `jars/`。
 
-修改公共源码后，先构建本前置，再构建 Moci。主工程为接口编译加入公共源码路径，但明确从 MociShipPack.jar 排除 `org/moci/filmshield/**`；实际运行始终使用独立前置 JAR，不能把公共类再打进其他 mod。主工程编译通过不代表已更新前置 JAR。
+修改公共源码后，先构建本前置，再构建 Moci。主工程只把 `Moci的贴膜盾前置/jars/FilmShield.jar` 作为编译依赖，不再将前置源码加入本体模块；本体打包仍排除 `org/moci/filmshield/**`，前置打包只收录这个包。主工程编译通过不代表已更新前置 JAR。
 
-运行 `./package.ps1` 构建并生成 `releases/Moci的贴膜盾前置-1.3.3.zip`；已完成构建时可加 `-SkipBuild`。游戏用发布包包含 mod_info.json、jars、data、graphics，以及 README、接入与兼容说明、验证记录和接入示例。src、tests 随源码仓库提供。
+IDEA 用户更新这套配置后，先重新加载 Maven 项目，再重建项目和 `MociShipPack` 工件。工件布局只保留 `moci` 模块编译输出，不要添加前置依赖的解压内容。旧配置曾把前置类编译到本体的 `target/classes`，切换时需要一次 clean；仅重新生成 JAR 不会清除这些旧 class。前置只使用自己的 `build.ps1` 独立生成 `FilmShield.jar`。
+
+运行 `./package.ps1` 构建并生成 `releases/Moci的贴膜盾前置-1.4.0.zip`；已完成构建时可加 `-SkipBuild`。游戏用发布包包含 mod_info.json、jars、data、graphics，以及 README、接入与兼容说明、验证记录和接入示例。src、tests 随源码仓库提供。
 
 ## 接入方式
 
@@ -34,7 +36,7 @@
 {"id":"moci_filmshield","name":"Moci的贴膜盾前置","version":"1.3.0"}
 ```
 
-依赖版本填自己用到的接口的最低版本：船插优先选择为 1.1.0，原版盾角配置为 1.2.0，关闭开关接口为 1.3.0。1.3.1～1.3.3 为行为修复，没有接口变化。
+依赖版本填自己用到的接口的最低版本：船插优先选择为 1.1.0，原版盾角配置为 1.2.0，关闭开关接口为 1.3.0。1.3.1～1.3.3 为行为修复；外控保留原版盾的新方法需要 1.4.0。
 
 1. **只写舰船数据**：将 `filmshield_surface` 加入 builtInMods。该通用船插隐藏于普通安装列表，不自动加入任何商店或船只；跟随原版护盾开关，要求有原版护盾。
 2. **完整伤害机制**：继承 `FilmShieldHullmod`，或让自己的船插实现 `FilmShieldProvider` 并调用 `FilmShield.attach(ship, profile, hullmodId)`。也可用 `profile.hullmodId(...)` 绑定旧 attach 入口。未选中的船插返回 null，调用方必须判断；不要对它启动额外监听器或 UI。原版模式跟随原版护盾，船上没有原版护盾时只记录警告并跳过；`EXTERNAL` 模式适合没有原版护盾的船，由系统或 AI 调用 `setEnabled`，默认关闭。两种模式都在过载、排幅、相位和死亡时停用。
@@ -63,13 +65,13 @@
 |---|---|
 | 不设置，或 `.nativeShieldArc(0f)` | 沿用旧行为，将原版碰撞盾角设为 0 度 |
 | `.preserveNativeShieldArc()` | 初始化和卸载均不写原版盾角，保留舰船及其他 mod 的调整 |
-| `.nativeShieldArc(90f)` | 将原版碰撞盾角设为 90 度；允许有限的 0～360 度数值，卸载时恢复接入前的角度 |
+| `.nativeShieldArc(90f)` | 将原版碰撞盾角设为 90 度；允许有限的 0～360 度数值，1.3.2 起卸载不回写 |
 
 这项策略按 profile 独立设置，两种控制模式都适用；继承母舰 profile 的模块沿用同一策略，无原版护盾时无需操作。链中最后一次盾角策略调用生效。新接口要求最低依赖版本 1.2.0，API 主版本仍为 1；旧接入无需修改，继续使用 0 度。
 
 这里配置的是原版碰撞盾角，不是贴膜防御覆盖角。非零原版盾角仍可能先拦截来袭伤害；`shieldHit=true` 的命中由原版结算，公共贴膜监听器跳过它，不重复添加贴膜幅能或吸收效果。未被原版盾拦截的命中仍由贴膜处理。隐藏原版护盾的绘制并不关闭其碰撞。
 
-本选项只控制盾角；原有的原版护盾半径调整、隐藏绘制和透明颜色处理仍会执行。因此“保留盾角”不等于完全保留原版护盾，也不能保证任意第三方护盾兼容。若需完全自管原版护盾、结算或特殊 `shieldHit` 行为，使用 `registerVisual` 视觉接口。具体例子和验收场景见 [接入与兼容说明.md](接入与兼容说明.md)。
+仅保留盾角不会保留半径和显示。自 1.4.0 起，外控接入方可选 `.control(ShieldProfile.Control.EXTERNAL).preserveNativeShield()`，使原版盾的角度、半径和外观保持原样；不选仍按旧行为隐藏。显式盾角仍优先。若需完全自管伤害，使用 `registerVisual` 视觉接口。开关、依赖声明和命中分工见 [接入与兼容说明.md](接入与兼容说明.md)。
 
 ## 关闭贴膜盾兼容开关（1.3.0）
 
@@ -81,6 +83,18 @@
 - 旧入口：没有船插 ID 的旧式 `attach` 在关闭的船上返回一个不起作用的控制器（不返回 null，避免旧调用方空指针）；`registerVisual(ship, visual)` 与 `claim` 直接忽略，不报冲突。完全绕过前置、自己修改原版护盾的第三方代码不受开关约束，需要自行检查 `FilmShield.isDisabled(ship)`。
 
 其他 mod 的接入写法见 [接入与兼容说明.md](接入与兼容说明.md)。
+
+## 战斗日志排查
+
+以下日志默认保留，不依赖开发模式：
+
+- Moci 本体的 [Moci_GNShieldDiag]：每场战斗版本信息；每艘 GN 盾或 GN 力场舰入场时的 registration result=success/failed/disabled/not_selected，包含舰体、实例 ID、阵营、选中船插、监听器、visual、渲染器和 UI 登记。GN 力场没有公共 FilmShieldController 属于正常接入方式，检查 fieldListener 和 visual。services_ready 表示渲染器与对应 UI 登记均已观察到；晚于入场两秒仍缺失时报警。
+- [GN_SHIELD]：原有首帧着色器就绪、重试后就绪、初始化异常、颜色 uniform 缺失日志继续保留。
+- [FILMSHIELD_RENDER]：渲染器登记、首次渲染的显卡/OpenGL/GLSL/模板缓冲信息、着色器尝试次数和 uniform 位置；每舰首次可见且激活绘制时记录 path=shader 或 path=fixed_pipeline，路径改变时再记录。舰船离开屏幕或未开盾时没有 ship_render，不应据此认定注册失败。
+- 同一渲染器中的 program_state_mismatch、texture_invalid、stencil_unavailable、VBO/法线缓冲异常各只警告一次；程序和纹理状态最多每战斗秒抽查一次。不会读取并清空其他渲染器的 OpenGL 错误队列。
+- [FILMSHIELD_SHADER]：保留编译/链接错误原文，补充加载路径、实际加载的顶点/片段源码 SHA-256、共享程序复用和失效重编译记录，用于识别旧资源或其他 mod 对同路径资源的覆盖。
+
+遇到整船色块、黑盾或效果消失时，请保留从启动、进入战斗到异常发生后的完整 starsector.log，并注明舰体、敌我、首次出现时机和是否自行恢复。请勿只截取 shader ready：它只证明初始化成功，不证明之后每次绘制都正常。本轮仅增加诊断，不据此认定玩家问题已经修复。
 
 ## 1.3.3 修复
 

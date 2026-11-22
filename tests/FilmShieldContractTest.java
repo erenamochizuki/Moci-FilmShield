@@ -80,9 +80,11 @@ public final class FilmShieldContractTest {
      * 构造参数 {@code nativeShield} 决定这艘船有没有原版护盾（false 用于测 EXTERNAL 模式与无盾警告）。
      */
     static class Hull {
-        boolean alive=true,hulk,removed,phased,overloaded,shieldOn=true,skip;
+        boolean alive=true,hulk,removed,phased,overloaded,venting,shieldOn=true,skip;
         boolean lastHard; float flux,arc=120,radius=90;
-        int arcWrites;
+        float hitpoints=900f;
+        float forcedFacing=Float.NaN;
+        int arcWrites,appearanceWrites;
         Color inner=Color.BLUE,ring=Color.CYAN;
         float[][] armor={{100,100},{100,100}};
         final Map<String,Object> custom=new HashMap<>();
@@ -100,7 +102,9 @@ public final class FilmShieldContractTest {
         final Vector2f location=new Vector2f();
         final FluxTrackerAPI fluxTracker=proxy(FluxTrackerAPI.class,(m,a)->{
             switch(m.getName()) {
-                case "isOverloadedOrVenting": return overloaded;
+                case "isOverloadedOrVenting": return overloaded||venting;
+                case "isOverloaded": return overloaded;
+                case "isVenting": return venting;
                 case "increaseFlux": flux+=(Float)a[0]; lastHard=(Boolean)a[1]; return false;
                 case "getCurrFlux": return flux;
                 case "getMaxFlux": return 10000f;
@@ -118,11 +122,12 @@ public final class FilmShieldContractTest {
         final ShieldAPI shield=proxy(ShieldAPI.class,(m,a)->{
             switch(m.getName()) {
                 case "getArc":return arc; case "setArc":arcWrites++;arc=(Float)a[0];return null;
-                case "getRadius":return radius; case "setRadius":radius=(Float)a[0];return null;
-                case "getInnerColor":return inner; case "setInnerColor":inner=(Color)a[0];return null;
-                case "getRingColor":return ring; case "setRingColor":ring=(Color)a[0];return null;
-                case "isSkipRendering":return skip; case "setSkipRendering":skip=(Boolean)a[0];return null;
+                case "getRadius":return radius; case "setRadius":appearanceWrites++;radius=(Float)a[0];return null;
+                case "getInnerColor":return inner; case "setInnerColor":appearanceWrites++;inner=(Color)a[0];return null;
+                case "getRingColor":return ring; case "setRingColor":appearanceWrites++;ring=(Color)a[0];return null;
+                case "isSkipRendering":return skip; case "setSkipRendering":appearanceWrites++;skip=(Boolean)a[0];return null;
                 case "isOn":return shieldOn; case "getLocation":return location;
+                case "forceFacing":forcedFacing=(Float)a[0];return null;
             } return zero(m.getReturnType());
         });
         final ShipHullSpecAPI hullSpec=proxy(ShipHullSpecAPI.class,(m,a)->{
@@ -144,6 +149,10 @@ public final class FilmShieldContractTest {
                     case "getFluxTracker":return fluxTracker;
                     case "getMutableStats":return mutable;
                     case "getArmorGrid":return armorAPI;
+                    case "getMaxFlux":return fluxTracker.getMaxFlux();
+                    case "getCurrentCR":return 0.7f;
+                    case "getHitpoints":return hitpoints;
+                    case "setHitpoints":hitpoints=(Float)a[0];return null;
                     case "getHullSize":return ShipAPI.HullSize.FRIGATE;
                     case "getCollisionRadius":return 100f;
                     case "isAlive":return alive; case "isHulk":return hulk; case "wasRemoved":return removed;
@@ -237,6 +246,144 @@ public final class FilmShieldContractTest {
         FilmShieldController external=FilmShield.attach(shieldless.ship,ShieldProfile.builder("arc_shieldless")
                 .control(ShieldProfile.Control.EXTERNAL).nativeShieldArc(360f).build());
         external.setEnabled(true);check(external.isActive(),"arc override is harmless without ShieldAPI");FilmShield.detach(shieldless.ship);
+    }
+
+    static void externalNativeShieldTests() {
+        reject(()->ShieldProfile.builder("native").preserveNativeShield().build(),"full preservation needs EXTERNAL control");
+        for(boolean preserve:new boolean[]{false,true}) {
+            Hull hull=new Hull(true);
+            ShieldProfile.Builder b=ShieldProfile.builder("surface").control(ShieldProfile.Control.EXTERNAL);
+            if(preserve) b.preserveNativeShield();
+            FilmShieldController c=FilmShield.attach(hull.ship,b.build());
+            check(!c.isActive(),"preserving the shield does not enable the film");
+            near(preserve?120f:0f,hull.arc,"native arc on attach");
+            near(preserve?90f:80f,hull.radius,"native radius on attach");
+            check(hull.skip==!preserve,"legacy profiles still hide native rendering");
+            check(preserve ? hull.inner.equals(Color.BLUE)&&hull.ring.equals(Color.CYAN)
+                    : hull.inner.getAlpha()==0&&hull.ring.getAlpha()==0,"native shield colors on attach");
+            check(hull.arcWrites==(preserve?0:1)&&hull.appearanceWrites==(preserve?0:4),"only configured properties are written");
+            c.setEnabled(true);
+            check(c.modifyDamageTaken(null,hull.ship,new Hit().api,null,true)==null,"native collision is not charged to the film");
+            near(0f,hull.flux,"no duplicate native-hit flux");
+            hull.shieldOn=false;
+            check(c.modifyDamageTaken(null,hull.ship,new Hit().api,null,false)!=null,"film protects the hull independently");
+            near(100f,hull.flux,"one film charge for one hull hit");
+            hull.shield.setArc(77f);
+            hull.shield.setRadius(109f);
+            hull.shield.setSkipRendering(false);
+            hull.shield.setInnerColor(Color.GREEN);
+            hull.shield.setRingColor(Color.WHITE);
+            int arcWrites=hull.arcWrites, appearanceWrites=hull.appearanceWrites;
+            c.advance(.1f);
+            c.setEnabled(false);
+            hull.shieldOn=true;
+            c.advance(.1f);
+            FilmShield.detach(hull.ship);
+            check(hull.arcWrites==arcWrites&&hull.appearanceWrites==appearanceWrites,
+                    "advance, toggling and detach do not overwrite third-party changes");
+            if(preserve) check(Float.isNaN(hull.forcedFacing),"preserved native shield is never steered");
+            else near(180f,hull.forcedFacing,"hidden native shield still faces aft while up");
+        }
+        for(boolean arcFirst:new boolean[]{false,true}) {
+            ShieldProfile.Builder b=ShieldProfile.builder("custom_arc");
+            if(arcFirst) b.nativeShieldArc(65f).preserveNativeShield();
+            else b.preserveNativeShield().nativeShieldArc(65f);
+            Hull hull=new Hull(true);
+            FilmShield.attach(hull.ship,b.control(ShieldProfile.Control.EXTERNAL).build());
+            near(65f,hull.arc,"explicit arc takes priority in either builder order");
+            check(hull.appearanceWrites==0,"explicit arc does not opt into radius or rendering changes");
+            FilmShield.detach(hull.ship);
+        }
+        ShieldProfile keep=ShieldProfile.builder("family").control(ShieldProfile.Control.EXTERNAL).preserveNativeShield().build();
+        Hull parent=new Hull(false),module=new Hull(true);
+        module.parent=parent.ship; parent.modules.add(module.ship);
+        FilmShield.attach(parent.ship,keep).setEnabled(true);
+        FilmShield.attachModules(parent.ship,keep);
+        check(FilmShield.find(module.ship).isActive(),"shieldless external parent still controls inherited film");
+        check(module.arcWrites==0&&module.appearanceWrites==0,"module keeps its own native shield");
+        FilmShield.detach(parent.ship);
+    }
+
+    static void controlModeArmorTests() {
+        CombatEngineAPI previous=Global.getCombatEngine();
+        SettingsAPI previousSettings=Global.getSettings();
+        Global.setSettings(proxy(SettingsAPI.class,(method,args)->zero(method.getReturnType())));
+        Map<String,Object> engineData=new HashMap<>();
+        Global.setCombatEngine(proxy(CombatEngineAPI.class,(method,args)->method.getName().equals("getCustomData")
+                ?engineData:zero(method.getReturnType())));
+        try {
+            externalNativeShieldTests();
+            for(boolean nativeOn:new boolean[]{true,false}) for(boolean externalOn:new boolean[]{false,true}) {
+                Hull hull=new Hull(true);
+                hull.shieldOn=nativeOn;
+                FilmShieldController film=FilmShield.attach(hull.ship,external("manual"));
+                film.setEnabled(externalOn);
+                String mode=" (native="+nativeOn+", external="+externalOn+")";
+                check(film.isActive()==externalOn,"only the external switch controls the film"+mode);
+                if(nativeOn) {
+                    Hit nativeHit=new Hit();
+                    check(film.modifyDamageTaken(null,hull.ship,nativeHit.api,null,true)==null,"native hit belongs to native shield"+mode);
+                    near(1f,nativeHit.modifier.getModifiedValue(),"native damage stays unmodified"+mode);
+                    near(0f,hull.flux,"no film flux for native hit"+mode);
+                }
+                Hit hullHit=new Hit();
+                check((film.modifyDamageTaken(null,hull.ship,hullHit.api,null,false)!=null)==externalOn,"hull hit follows external switch"+mode);
+                near(externalOn?0.0001f:1f,hullHit.modifier.getModifiedValue(),"hull damage multiplier"+mode);
+                hull.armor[0][0]=externalOn?99f:40f;
+                film.advance(.1f);
+                float expected=externalOn?100f:40f;
+                near(expected,hull.armor[0][0],"only an absorbed hull hit restores armor"+mode);
+                near(externalOn?100f:0f,hull.flux,"only absorbed damage charges film flux"+mode);
+                hull.shieldOn=!nativeOn;
+                film.setEnabled(!externalOn);
+                film.advance(.1f);
+                near(expected,hull.armor[0][0],"changing switches never heals past damage"+mode);
+                near(180f,hull.forcedFacing,"hidden native shield under external film still faces aft"+mode);
+                FilmShield.detach(hull.ship);
+            }
+            for(ShieldProfile.Control control:ShieldProfile.Control.values()) selectiveArmorTests(control);
+            Hull legacy=new Hull(true);
+            FilmShieldController ordinary=FilmShield.attach(legacy.ship,ShieldProfile.builder("ordinary").build());
+            ordinary.setEnabled(false);
+            legacy.armor[0][0]=70f;
+            ordinary.advance(.1f);
+            check(ordinary.isActive(),"native mode ignores the external switch");
+            near(100f,legacy.armor[0][0],"unfiltered native shield still freezes armor");
+            near(180f,legacy.forcedFacing,"ordinary native shield still faces aft");
+            FilmShield.detach(legacy.ship);
+        } finally { Global.setCombatEngine(previous); Global.setSettings(previousSettings); }
+    }
+
+    static void selectiveArmorTests(ShieldProfile.Control control) {
+        Hull hull=new Hull(true);
+        Object acceptedSource=new Object();
+        ShieldProfile profile=ShieldProfile.builder("selective").control(control).hooks(new ShieldHooks(){
+            @Override public boolean shouldAbsorb(ShipAPI ship,Object source,DamageAPI damage,Vector2f point) { return source==acceptedSource; }
+        }).build();
+        FilmShieldController film=FilmShield.attach(hull.ship,profile);
+        film.setEnabled(true);
+        check(film.modifyDamageTaken(acceptedSource,hull.ship,new Hit().api,null,false)!=null,"first hit absorbed: "+control);
+        hull.armor[0][0]=99f;
+        check(film.modifyDamageTaken(null,hull.ship,new Hit().api,null,false)==null,"second hit bypasses: "+control);
+        near(100f,hull.armor[0][0],"previous hit settled before bypass: "+control);
+        hull.armor[0][0]=70f;
+        film.advance(.1f);
+        near(70f,hull.armor[0][0],"same-frame bypass after absorption stays damaged: "+control);
+        check(film.modifyDamageTaken(null,hull.ship,new Hit().api,null,false)==null,"first hit bypasses: "+control);
+        hull.armor[0][0]=40f;
+        check(film.modifyDamageTaken(acceptedSource,hull.ship,new Hit().api,null,false)!=null,"second hit absorbed: "+control);
+        hull.armor[0][0]=39f;
+        film.advance(.1f);
+        near(40f,hull.armor[0][0],"reverse order restores only absorbed residue: "+control);
+        near(control==ShieldProfile.Control.NATIVE_SHIELD?160f:200f,hull.flux,"only the two accepted hits cost flux: "+control);
+        check(film.modifyDamageTaken(null,hull.ship,new Hit().api,null,false)==null,"last hit bypasses before native toggle: "+control);
+        hull.armor[0][0]=30f;
+        hull.shieldOn=false;
+        film.advance(.1f);
+        hull.shieldOn=true;
+        film.advance(.1f);
+        near(30f,hull.armor[0][0],"native reopen never heals a previously vetoed hit: "+control);
+        FilmShield.detach(hull.ship);
     }
     /** 1.3.0: a native-shield profile on a ship whose ShieldAPI is missing (e.g. removed by another hullmod) must not crash ship creation. */
     /**
@@ -479,6 +626,7 @@ public final class FilmShieldContractTest {
         // —— 子测试一~二：原版盾角改写、无盾船警告 ——
         nativeArcTests();
         shieldlessNativeTests();
+        controlModeArmorTests();
         // —— 参数校验：NaN 与负数倍率必须被拒绝 ——
         reject(()->ShieldProfile.builder("bad").fluxPerDamage(Float.NaN).build(),"reject NaN");
         reject(()->ShieldProfile.builder("bad").fragmentationMultiplier(-1).build(),"reject negative multiplier");

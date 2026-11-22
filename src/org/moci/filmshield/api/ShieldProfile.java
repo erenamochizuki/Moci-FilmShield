@@ -9,18 +9,22 @@ public final class ShieldProfile {
     /** Whether to override the native collision arc; independent of the film shield's coverage. */
     public final boolean overrideNativeShieldArc;
     public final float nativeShieldArc;
+    /** EXTERNAL opt-in: leave the native geometry and rendering alone, except for an explicit arc override. */
+    public final boolean preserveNativeShield;
     public final boolean followParent, showStatus, suppressSpecLessModuleProjectiles;
     public final Color lowColor, highColor;
     public final ShieldHooks hooks;
     private ShieldProfile(Builder b) {
         if (b.id == null || b.id.trim().isEmpty()) throw new IllegalArgumentException("Profile id is required");
         if (b.control == null || b.low == null || b.high == null || b.hooks == null) throw new IllegalArgumentException("Null profile option");
+        if (b.preserveNativeShield && b.control != Control.EXTERNAL) throw new IllegalArgumentException("preserveNativeShield requires EXTERNAL control");
         if (!Float.isFinite(b.flux) || b.flux < 0 || !Float.isFinite(b.frag) || b.frag < 0) throw new IllegalArgumentException("Flux and fragmentation multipliers must be finite and nonnegative");
         if (!Float.isFinite(b.nativeArc) || b.nativeArc < 0f || b.nativeArc > 360f) throw new IllegalArgumentException("Native shield arc must be finite and within [0, 360]");
         id=b.id; hullmodId=b.hullmodId; control=b.control; title=b.title; activeText=b.on; inactiveText=b.off;
         hudActiveText=b.hudOn; hudInactiveText=b.hudOff; modifierId=b.modifierId;
         fluxPerDamage=b.flux; fragmentationMultiplier=b.frag; followParent=b.parent;
-        overrideNativeShieldArc=b.overrideArc; nativeShieldArc=b.nativeArc;
+        preserveNativeShield=b.preserveNativeShield;
+        overrideNativeShieldArc=b.overrideArc!=null ? b.overrideArc : !preserveNativeShield; nativeShieldArc=b.nativeArc;
         showStatus=b.status; suppressSpecLessModuleProjectiles=b.suppress;
         lowColor=b.low; highColor=b.high; hooks=b.hooks;
     }
@@ -30,7 +34,8 @@ public final class ShieldProfile {
         private String hullmodId;
         private Control control=Control.NATIVE_SHIELD;
         private float flux=1f, frag=1f;
-        private boolean overrideArc=true;
+        private Boolean overrideArc; // null: use the profile default; explicit arc strategies take precedence.
+        private boolean preserveNativeShield;
         private float nativeArc=0f;
         private boolean parent=true, status=true, suppress=false;
         private String title="贴膜盾", on="激活", off="关闭", hudOn="FIELD: ON", hudOff="FIELD: OFF", modifierId="filmshield_absorb";
@@ -43,7 +48,9 @@ public final class ShieldProfile {
             hullmodId=value; return this;
         }
         public Builder control(Control v) { control=v; return this; }
-        /** Override the native collision arc in degrees [0, 360]. Default is 0 for legacy behavior.
+        /** EXTERNAL only. Do not resize, hide or recolor the native shield; keep its arc unless explicitly configured. */
+        public Builder preserveNativeShield() { preserveNativeShield=true; return this; }
+        /** Override the native collision arc in degrees [0, 360]. Legacy profiles default to 0.
          * Nonzero arcs can intercept hits before the film shield; native shield hits use native settlement.
          * Applies to either control mode when a ShieldAPI exists; does not change film coverage or rendering.
          */

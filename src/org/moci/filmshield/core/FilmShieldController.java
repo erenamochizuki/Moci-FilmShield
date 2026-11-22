@@ -28,6 +28,7 @@ public class FilmShieldController implements DamageTakenModifier, AdvanceableLis
     private final Set<DamageAPI> modifiedDamage=Collections.newSetFromMap(new IdentityHashMap<DamageAPI,Boolean>());
     private final ShieldAPI originalShield;
     private boolean enabled,disposed,pendingArmorRestore,servicesStarted;
+    private boolean preserveBypassedArmor;
     private float[][] armorGridCopy;
     public FilmShieldController(ShipAPI ship,ShieldProfile profile) {
         this(ship,profile,profile==null?null:profile.hullmodId);
@@ -52,10 +53,12 @@ public class FilmShieldController implements DamageTakenModifier, AdvanceableLis
     public void init(ShipAPI ignored) {
         if(originalShield!=null) {
             if(profile.overrideNativeShieldArc) originalShield.setArc(profile.nativeShieldArc);
-            originalShield.setRadius(Math.max(10f,ship.getCollisionRadius()-ship.getHullSize().ordinal()*10f));
-            originalShield.setSkipRendering(true);
-            originalShield.setInnerColor(new Color(0,0,0,0));
-            originalShield.setRingColor(new Color(0,0,0,0));
+            if(!profile.preserveNativeShield) {
+                originalShield.setRadius(Math.max(10f,ship.getCollisionRadius()-ship.getHullSize().ordinal()*10f));
+                originalShield.setSkipRendering(true);
+                originalShield.setInnerColor(new Color(0,0,0,0));
+                originalShield.setRingColor(new Color(0,0,0,0));
+            }
         }
         // Snapshot the armor grid once so the first combat frame already has a baseline to restore from.
         saveArmor();
@@ -106,14 +109,15 @@ public class FilmShieldController implements DamageTakenModifier, AdvanceableLis
         damage.getModifier().unmodify(profile.modifierId);
         // Finish the preceding absorbed hit before any following bypass hit can alter armor.
         finishArmorRestore();
-        if(target!=ship||shieldHit||!isActive()||!profile.hooks.shouldAbsorb(ship,param,damage,point)) return null;
+        if(target!=ship||shieldHit||!isActive()) return null;
+        if(!profile.hooks.shouldAbsorb(ship,param,damage,point)) return passHullHitThrough();
         ShipAPI owner=fluxOwner();
         ShipAPI source=param instanceof BeamAPI ? ((BeamAPI)param).getSource()
                 : param instanceof DamagingProjectileAPI ? ((DamagingProjectileAPI)param).getSource() : null;
         boolean beam=param instanceof BeamAPI||damage.isDps();
         float factor=profile.fluxPerDamage;
         if(profile.control==ShieldProfile.Control.NATIVE_SHIELD) {
-            if(owner.getHullSpec().getShieldSpec()==null) return null;
+            if(owner.getHullSpec().getShieldSpec()==null) return passHullHitThrough();
             factor*=owner.getHullSpec().getShieldSpec().getFluxPerDamageAbsorbed();
         }
         factor*=owner.getMutableStats().getShieldAbsorptionMult().getModifiedValue()
@@ -121,7 +125,7 @@ public class FilmShieldController implements DamageTakenModifier, AdvanceableLis
         if(owner!=ship&&profile.suppressSpecLessModuleProjectiles&&param instanceof DamagingProjectileAPI
                 &&shouldSuppressFluxForProjectile((DamagingProjectileAPI)param)) factor=0;
         float flux=profile.hooks.modifyFlux(ship,param,damage,computeDamageToShield(damage,source,beam)*factor);
-        if(!Float.isFinite(flux)||flux<0) return null;
+        if(!Float.isFinite(flux)||flux<0) return passHullHitThrough();
         // Preserve instantaneous melee beam hits: duration applies only to DPS, and they generate hard flux.
         boolean hard=damage.isForceHardFlux()||(!damage.isDps()&&!damage.isSoftFlux())||(!beam&&!damage.isSoftFlux());
         saveArmor();
@@ -150,16 +154,15 @@ public class FilmShieldController implements DamageTakenModifier, AdvanceableLis
         if(engine==null||engine.isPaused()) return;
         if(!servicesStarted) { FilmShield.ensureCombatServices(); servicesStarted=true; }
         finishArmorRestore();
-        // Pre-extraction behaviour, deliberately kept: while the native shield is on, its facing is locked to the
-        // stern. The engine floors the intercept cone at 1 degree whatever the configured arc is, and pointing that
-        // cone aft keeps it off the axis every frontal hit travels along, so the native shield can never swallow a
-        // hit before the film gets to see it. The armor grid is frozen for as long as the shield is up.
+        // A hidden native shield (arc 0, which the engine floors to a 1 degree intercept cone) is still steered to the
+        // stern while it is up, so it cannot swallow frontal hits before the film sees them. This applies to
+        // EXTERNAL too unless the integrator opted into preserveNativeShield(), where the shield is the player's own.
         ShieldAPI nativeShield=ship.getShield();
-        boolean shieldOn=nativeShield!=null&&nativeShield.isOn();
-        if(shieldOn) {
-            nativeShield.forceFacing(Misc.normalizeAngle(ship.getFacing()+180f));
-            retainArmor();
-        }
+        boolean nativeUp=nativeShield!=null&&nativeShield.isOn();
+        if(nativeUp&&!profile.preserveNativeShield) nativeShield.forceFacing(Misc.normalizeAngle(ship.getFacing()+180f));
+        // Only NATIVE_SHIELD films follow the native key, so only they freeze armor while it is up.
+        boolean shieldOn=nativeUp&&profile.control==ShieldProfile.Control.NATIVE_SHIELD;
+        if(shieldOn&&!preserveBypassedArmor) retainArmor();
         for(DamageAPI damage:modifiedDamage) damage.getModifier().unmodify(profile.modifierId);
         modifiedDamage.clear();
         for(Iterator<Hit> it=hits.iterator();it.hasNext();) { Hit hit=it.next(); hit.advance(amount); if(hit.shouldExpire()) it.remove(); }
@@ -168,7 +171,8 @@ public class FilmShieldController implements DamageTakenModifier, AdvanceableLis
         else ship.getMutableStats().getEmpDamageTakenMult().unmodify(profile.modifierId);
         if(profile.showStatus&&engine.getPlayerShip()==ship) engine.maintainStatusForPlayerShip(profile.modifierId,
                 "graphics/icons/hullsys/fortress_shield.png",profile.title,isActive()?profile.activeText:profile.inactiveText,!isActive());
-        if(shieldOn) saveArmor();
+        if(shieldOn||preserveBypassedArmor) saveArmor();
+        preserveBypassedArmor=false;
     }
     protected Hit createHit(Vector2f point,float time,float size) { return new Hit(ship,point,time,size); }
     protected void attachModules() { FilmShield.attachModules(ship,profile); }
@@ -192,6 +196,10 @@ public class FilmShieldController implements DamageTakenModifier, AdvanceableLis
         }
         FilmShield.release(this);
         ship.removeListener(this);
+    }
+    private String passHullHitThrough() {
+        preserveBypassedArmor=profile.control==ShieldProfile.Control.NATIVE_SHIELD;
+        return null;
     }
     private void finishArmorRestore() { if(pendingArmorRestore) { retainArmor(); pendingArmorRestore=false; } }
     public void saveArmor() {

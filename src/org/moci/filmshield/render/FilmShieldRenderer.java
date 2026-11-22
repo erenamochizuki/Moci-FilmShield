@@ -64,6 +64,12 @@ public class FilmShieldRenderer extends BaseCombatLayeredRenderingPlugin {
     private float shaderRetryTimer = 0f;
     // 是否已经尝试过初始化：首帧立刻试一次，失败后才进入 SHADER_RETRY_INTERVAL 节流重试
     private boolean shaderInitAttempted = false;
+    private int shaderInitAttempts;
+    private String shaderFailure = "not_attempted";
+    private boolean environmentReported;
+    private final Set<String> diagnosticWarnings = new HashSet<String>();
+    private final Map<ShipAPI, Boolean> reportedRenderPaths = new java.util.IdentityHashMap<ShipAPI, Boolean>();
+    private float lastProgramProbe = -10f;
 
     // 着色器状态优化
     private int currentShader = -1; // 当前绑定的着色器，避免重复绑定
@@ -133,6 +139,8 @@ public class FilmShieldRenderer extends BaseCombatLayeredRenderingPlugin {
     }
 
     private void initializeShader() {
+        shaderInitAttempts++;
+        shaderFailure = "program_creation_failed";
         shader = 0;
         uniform = null;
         shaderInitialized = false;
@@ -192,6 +200,9 @@ public class FilmShieldRenderer extends BaseCombatLayeredRenderingPlugin {
                 } else {
                     shaderInitialized = false;
                     normalUniformsAvailable = false;
+                    shaderFailure = "required_uniform_missing";
+                    diagnosticWarning("required_uniform_missing", "required uniforms unavailable; locations="
+                            + java.util.Arrays.toString(uniform), null);
                 }
             } else {
                 shaderInitialized = false;
@@ -207,6 +218,7 @@ public class FilmShieldRenderer extends BaseCombatLayeredRenderingPlugin {
             shaderInitialized = false;
             normalUniformsAvailable = false;
             LOG.error("[GN_SHIELD] initializeShader exception", e);
+            shaderFailure = "init_exception:" + e.getClass().getSimpleName();
         }
     }
 
@@ -236,9 +248,16 @@ public class FilmShieldRenderer extends BaseCombatLayeredRenderingPlugin {
         // 一次性结果日志：便于区分「首帧就绪」与「回退若干秒后才就绪」
         if (shaderInitialized) {
             LOG.info("[GN_SHIELD] shader ready (" + (firstAttempt ? "first render frame" : "after fallback retry") + ")");
+            shaderFailure = "none";
+            LOG.info("[FILMSHIELD_RENDER] shader_ready " + renderIdentity() + ", program=" + shader
+                    + ", attempts=" + shaderInitAttempts + ", uniforms=" + java.util.Arrays.toString(uniform)
+                    + ", normalUniforms=" + normalUniformsAvailable);
         } else if (firstAttempt) {
             LOG.warn("[GN_SHIELD] shader init failed on the first render frame; retrying every " + SHADER_RETRY_INTERVAL + "s");
         }
+        if (!shaderInitialized && (shaderInitAttempts <= 2 || shaderInitAttempts == 5 || shaderInitAttempts % 30 == 0))
+            LOG.warn("[FILMSHIELD_RENDER] shader_retry " + renderIdentity() + ", attempt=" + shaderInitAttempts
+                    + ", reason=" + shaderFailure + ", program=" + shader);
     }
 
     public static FilmShieldRenderer getInstance() {
@@ -249,6 +268,8 @@ public class FilmShieldRenderer extends BaseCombatLayeredRenderingPlugin {
         FilmShieldRenderer renderer=new FilmShieldRenderer();
         engine.getCustomData().put(RENDER_KEY,renderer);
         engine.addLayeredRenderingPlugin(renderer);
+        LOG.info("[FILMSHIELD_RENDER] renderer_registered " + renderer.renderIdentity()
+                + ", class=" + renderer.getClass().getName() + ", shadersEnabled=" + FilmShieldSettings.enableShaders);
         return renderer;
     }
 
@@ -268,6 +289,8 @@ public class FilmShieldRenderer extends BaseCombatLayeredRenderingPlugin {
         // 共享着色器程序跨战斗复用，不在单个渲染器清理时删除
         renderableShieldShips.clear();
         shieldSpreadProgress.clear();
+        reportedRenderPaths.clear();
+        diagnosticWarnings.clear();
         shaderInitialized=false;
         shaderInitAttempted=false;
         shaderRetryTimer=0f;
@@ -483,7 +506,7 @@ public class FilmShieldRenderer extends BaseCombatLayeredRenderingPlugin {
             unbindShader();
 
         } catch (Exception e) {
-            // Shader warmup failed, continue with fallback
+            diagnosticWarning("warmup_exception", "shader warmup exception; program=" + shader, e);
         }
     }
 
@@ -626,6 +649,7 @@ public class FilmShieldRenderer extends BaseCombatLayeredRenderingPlugin {
 
         } catch (Exception e) {
             vboInitialized = false;
+            diagnosticWarning("vbo_exception", "VBO initialization failed; buffer=" + shieldQuadVBO, e);
         }
     }
 
@@ -719,6 +743,7 @@ public class FilmShieldRenderer extends BaseCombatLayeredRenderingPlugin {
 
             normalCompositeInitialized = normalCompositeBuffer > 0;
             if (!normalCompositeInitialized) {
+                diagnosticWarning("normal_fbo_failed", "normal framebuffer creation failed; buffer=" + normalCompositeBuffer, null);
                 if (normalCompositeTexture != -1) {
                     GL11.glDeleteTextures(normalCompositeTexture);
                     normalCompositeTexture = -1;
@@ -726,6 +751,7 @@ public class FilmShieldRenderer extends BaseCombatLayeredRenderingPlugin {
             }
         } catch (Exception e) {
             normalCompositeInitialized = false;
+            diagnosticWarning("normal_fbo_exception", "normal framebuffer initialization exception", e);
             normalCompositeBuffer = -1;
             if (normalCompositeTexture != -1) {
                 GL11.glDeleteTextures(normalCompositeTexture);
@@ -1181,6 +1207,7 @@ public class FilmShieldRenderer extends BaseCombatLayeredRenderingPlugin {
             }
         } catch (Exception e) {
             renderedAny = false;
+            diagnosticWarning("normal_pass_exception", "normal composite exception; " + shipIdentity(ship), e);
         } finally {
             if (modelViewPushed) {
                 GL11.glMatrixMode(GL11.GL_MODELVIEW);
@@ -1220,7 +1247,10 @@ public class FilmShieldRenderer extends BaseCombatLayeredRenderingPlugin {
         int oldArrayBuffer=GLContext.getCapabilities().OpenGL15?GL11.glGetInteger(GL15.GL_ARRAY_BUFFER_BINDING):0;
         GL11.glPushAttrib(GL11.GL_ALL_ATTRIB_BITS);
         GL11.glPushClientAttrib(GL11.GL_CLIENT_VERTEX_ARRAY_BIT | GL11.GL_CLIENT_PIXEL_STORE_BIT);
+        ShipAPI renderingShip = null;
         try {
+            try { reportEnvironment(); }
+            catch (RuntimeException error) { diagnosticWarning("environment_probe_exception", "GL environment probe failed", error); }
             ensureShaderInitializedFromRender(Math.max(0.016f,engine.getElapsedInLastFrame()));
             if(supportsShaders && !shaderInitialized) GL20.glUseProgram(0);
             GL13.glClientActiveTexture(GL13.GL_TEXTURE0);
@@ -1234,9 +1264,14 @@ public class FilmShieldRenderer extends BaseCombatLayeredRenderingPlugin {
                 if(ShaderLib.isOnScreen(ship.getLocation(),radius*2f)) {
                     // The hit/normal passes reuse uniforms; invalidate before the next hull.
                     cachedType=cachedSpreadProgress=cachedSpreadRadius=cachedQuadRadius=cachedCombinedAlpha=cachedFluxLevel=-999f;
+                    renderingShip = ship;
                     processShield(ship);
                 }
             }
+        } catch (RuntimeException error) {
+            diagnosticWarning("render_exception", "program=" + shader + ", shaderInitialized=" + shaderInitialized
+                    + ", " + (renderingShip == null ? "before_ship_pass" : shipIdentity(renderingShip)), error);
+            throw error;
         } finally {
             if(supportsShaders) GL20.glUseProgram(oldProgram);
             currentShader=-1;
@@ -1333,6 +1368,9 @@ public class FilmShieldRenderer extends BaseCombatLayeredRenderingPlugin {
         if (shaderInitialized) {
             bindShaderOptimized();
         }
+
+        try { reportRenderPath(ship, shield, hitFx, hasNormalRelief); }
+        catch (RuntimeException error) { diagnosticWarning("render_probe_exception", "GL diagnostic probe failed", error); }
 
         // 第二步：在船只轮廓内渲染护盾
         GL11.glStencilFunc(GL11.GL_EQUAL, 1, 255);
@@ -1518,6 +1556,73 @@ public class FilmShieldRenderer extends BaseCombatLayeredRenderingPlugin {
     }
 
     // 着色器创建方法已移至FilmShieldShaderManager
+
+    private String renderIdentity() {
+        return "engine=0x" + Integer.toHexString(System.identityHashCode(engine))
+                + ", renderer=0x" + Integer.toHexString(System.identityHashCode(this))
+                + ", t=" + (engine == null ? -1f : engine.getTotalElapsedTime(false));
+    }
+
+    private static String shipIdentity(ShipAPI ship) {
+        return "hull=" + ship.getHullSpec().getHullId() + ", ship=" + ship.getId()
+                + ", member=" + ship.getFleetMemberId() + ", owner=" + ship.getOwner()
+                + ", selected=" + FilmShield.getSelectedHullmodId(ship)
+                + ", visual=" + (FilmShield.visual(ship) == null ? "null" : FilmShield.visual(ship).getClass().getName());
+    }
+
+    private void diagnosticWarning(String key, String message, Exception error) {
+        if (!diagnosticWarnings.add(key)) return;
+        String line = "[FILMSHIELD_RENDER] " + key + " " + renderIdentity() + ", " + message;
+        if (error == null) LOG.warn(line); else LOG.warn(line, error);
+    }
+
+    private void reportEnvironment() {
+        if (environmentReported) return;
+        environmentReported = true;
+        LOG.info("[FILMSHIELD_RENDER] environment " + renderIdentity()
+                + ", vendor=" + GL11.glGetString(GL11.GL_VENDOR)
+                + ", gpu=" + GL11.glGetString(GL11.GL_RENDERER)
+                + ", gl=" + GL11.glGetString(GL11.GL_VERSION)
+                + ", glsl=" + (GLContext.getCapabilities().OpenGL20 ? GL11.glGetString(GL20.GL_SHADING_LANGUAGE_VERSION) : "unsupported")
+                + ", shadersEnabled=" + FilmShieldSettings.enableShaders
+                + ", normalRelief=" + FilmShieldSettings.enableNormalRelief
+                + ", buffersAllowed=" + ShaderLib.areBuffersAllowed()
+                + ", stencilBits=" + GL11.glGetInteger(GL11.GL_STENCIL_BITS));
+    }
+
+    private void reportRenderPath(ShipAPI ship, SpriteAPI surface, SpriteAPI fx, boolean normalRelief) {
+        Boolean previous = reportedRenderPaths.get(ship);
+        if (previous == null || previous.booleanValue() != shaderInitialized) {
+            reportedRenderPaths.put(ship, shaderInitialized);
+            String line = "[FILMSHIELD_RENDER] ship_render path=" + (shaderInitialized ? "shader" : "fixed_pipeline")
+                    + " " + renderIdentity() + ", " + shipIdentity(ship) + ", program=" + shader
+                    + ", reason=" + (!FilmShieldSettings.enableShaders ? "config_disabled" : shaderFailure)
+                    + ", surfaceTex=" + surface.getTextureId() + ", fxTex=" + fx.getTextureId()
+                    + ", hullTex=" + ship.getSpriteAPI().getTextureId()
+                    + ", normalRelief=" + normalRelief + ", normalBuffer=" + normalCompositeBuffer
+                    + ", renderSize=" + calculateTotalShipSize(ship) + ", modules=" + ship.getChildModulesCopy().size();
+            if (shaderInitialized) LOG.info(line); else LOG.warn(line);
+            if (surface.getTextureId() <= 0 || fx.getTextureId() <= 0)
+                diagnosticWarning("texture_missing", "shield texture unavailable; " + shipIdentity(ship), null);
+        }
+        // GL queries run on the render thread, at most once per combat second for this renderer.
+        float now = engine.getTotalElapsedTime(false);
+        if (shaderInitialized && now - lastProgramProbe >= 1f) {
+            lastProgramProbe = now;
+            boolean valid = GL20.glIsProgram(shader);
+            int linked = valid ? GL20.glGetProgrami(shader, GL20.GL_LINK_STATUS) : 0;
+            int bound = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
+            if (!valid || linked == GL11.GL_FALSE || bound != shader)
+                diagnosticWarning("program_state_mismatch", "program=" + shader + ", valid=" + valid
+                        + ", linked=" + linked + ", bound=" + bound + ", " + shipIdentity(ship), null);
+            if (!GL11.glIsTexture(surface.getTextureId()) || !GL11.glIsTexture(fx.getTextureId()))
+                diagnosticWarning("texture_invalid", "surfaceTex=" + surface.getTextureId()
+                        + ", fxTex=" + fx.getTextureId() + ", " + shipIdentity(ship), null);
+            int stencilBits = GL11.glGetInteger(GL11.GL_STENCIL_BITS);
+            if (stencilBits == 0)
+                diagnosticWarning("stencil_unavailable", "stencilBits=0; hull mask unavailable; " + shipIdentity(ship), null);
+        }
+    }
 
     public boolean isShaderInitialized() {
         return shaderInitialized;
